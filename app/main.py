@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import json
 import os
 import re
 import tempfile
@@ -26,6 +27,7 @@ from app.progress import (
 )
 from app.schemas import (
     BookDetailResponse,
+    AudioScriptLine,
     AudiobookCreateRequest,
     AudiobookCreateResponse,
     BookReaderProgressRequest,
@@ -37,29 +39,57 @@ from app.schemas import (
     BookReaderResponse,
     BookSummary,
     ChapterSummary,
+    ChatScriptChapter,
+    ChatScriptCreateRequest,
+    ChatScriptResponse,
     MultiSummarizeError,
     MultiSummarizeResponse,
     ProviderModelsResponse,
+    StudioBibleFinalizeRequest,
+    StudioBibleResponse,
+    StudioChapterFinalizeRequest,
+    StudioChapterFinalizeResponse,
+    StudioMessageRequest,
+    StudioProjectCreateRequest,
+    StudioProjectDetailResponse,
+    StudioProjectResponse,
+    StudioSeriesCreateRequest,
+    StudioSeriesResponse,
+    StudioVolumeCreateRequest,
     SummarizeResponse,
     UploadProgressResponse,
 )
+from app.prompts import build_studio_bible_prompt, build_studio_system_prompt
 from app.provider_models import fetch_provider_models
 from app.storage import (
     compute_chapter_digest,
     ensure_book_directories,
+    extract_section,
     get_latest_epub_path,
     list_books,
+    list_series,
+    list_series_volumes,
     load_chapter_digest_index,
     prune_chapter_files,
+    read_bible,
+    read_bible_conversation,
     read_book_detail,
     read_book_reader,
     read_book_reader_progress,
     read_saved_chapter_summaries,
     read_book_summary_snapshot,
+    read_series,
+    read_studio_conversation,
+    read_studio_project,
+    save_bible,
+    save_bible_conversation,
     save_book_summary,
     save_book_reader_progress,
     save_chapter_digest_index,
     save_chapter_summary,
+    save_series,
+    save_studio_conversation,
+    save_studio_project,
     save_uploaded_epub,
 )
 from app.summarizer import MultiProviderBookSummarizer, normalize_provider
@@ -93,6 +123,14 @@ def panel() -> FileResponse:
     if not panel_path.exists():
         raise HTTPException(status_code=404, detail="웹 패널 파일이 없습니다.")
     return FileResponse(str(panel_path))
+
+
+@app.get("/studio")
+def studio_page() -> FileResponse:
+    studio_path = WEB_DIR / "studio.html"
+    if not studio_path.exists():
+        raise HTTPException(status_code=404, detail="스튜디오 페이지 파일이 없습니다.")
+    return FileResponse(str(studio_path))
 
 
 @app.get("/skill.md")
@@ -1012,6 +1050,452 @@ def ask_about_book_stream(book_slug: str, payload: BookAskRequest) -> StreamingR
     )
 
 
+@app.post("/studio/projects", response_model=StudioProjectResponse)
+def create_studio_project(payload: StudioProjectCreateRequest) -> StudioProjectResponse:
+    settings = get_settings()
+    title = (payload.title or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="제목을 입력해 주세요.")
+
+    try:
+        project_path = save_studio_project(
+            title,
+            premise=(payload.premise or "").strip(),
+            genre=(payload.genre or "").strip(),
+            language=(payload.language or "ko").strip() or "ko",
+            root_dir=settings.output_dir,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    slug = project_path.parent.name
+    project = read_studio_project(settings.output_dir, slug=slug)
+    return StudioProjectResponse(slug=slug, chapter_count=0, **project)
+
+
+@app.get("/studio/projects/{slug}", response_model=StudioProjectDetailResponse)
+def get_studio_project(slug: str) -> StudioProjectDetailResponse:
+    settings = get_settings()
+    try:
+        project = read_studio_project(settings.output_dir, slug=slug)
+        detail = read_book_detail(settings.output_dir, slug=slug)
+        messages = read_studio_conversation(settings.output_dir, slug=slug)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return StudioProjectDetailResponse(
+        slug=slug,
+        chapter_count=detail["chapter_count"],
+        messages=messages,
+        **project,
+    )
+
+
+@app.post("/studio/projects/{slug}/messages/stream")
+def studio_message_stream(slug: str, payload: StudioMessageRequest) -> StreamingResponse:
+    settings = get_settings()
+    message = (payload.message or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="메시지를 입력해 주세요.")
+
+    try:
+        project = read_studio_project(settings.output_dir, slug=slug)
+        detail = read_book_detail(settings.output_dir, slug=slug)
+        history = read_studio_conversation(settings.output_dir, slug=slug)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    try:
+        summarizer = _build_summarizer(
+            provider=payload.provider,
+            api_key=payload.api_key,
+            model=payload.model,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    language = (payload.language or project.get("language") or "ko").strip() or "ko"
+
+    finalized_chapters = [
+        {
+            "chapter_index": chapter["index"],
+            "chapter_title": chapter["title"],
+            "summary": extract_section(chapter["markdown"], "요약") or "",
+        }
+        for chapter in detail["chapters"]
+    ]
+
+    now = datetime.now(tz=timezone.utc).isoformat()
+    user_turn = {"role": "user", "content": message, "created_at": now}
+    updated_history = history + [user_turn]
+    save_studio_conversation(settings.output_dir, slug=slug, messages=updated_history)
+
+    system_prompt = build_studio_system_prompt(
+        book_title=project["book_title"],
+        premise=project.get("premise", ""),
+        genre=project.get("genre", ""),
+        language=language,
+        finalized_chapters=finalized_chapters,
+    )
+    llm_messages = [{"role": "system", "content": system_prompt}]
+    llm_messages.extend({"role": turn["role"], "content": turn["content"]} for turn in updated_history)
+
+    def _iter_chunks() -> Any:
+        collected: list[str] = []
+        try:
+            for chunk in summarizer.stream_with_messages(llm_messages):
+                if chunk:
+                    collected.append(chunk)
+                    yield chunk
+        except Exception as exc:  # noqa: BLE001
+            normalized_error = _normalize_error_message(exc)
+            logger.exception("[스튜디오 스트림 실패] /studio/projects/%s/messages/stream", slug)
+            yield f"\n\n[오류] 메시지 처리 중 오류가 발생했습니다: {normalized_error}"
+            return
+
+        assistant_turn = {
+            "role": "assistant",
+            "content": "".join(collected),
+            "created_at": datetime.now(tz=timezone.utc).isoformat(),
+        }
+        save_studio_conversation(
+            settings.output_dir,
+            slug=slug,
+            messages=updated_history + [assistant_turn],
+        )
+
+    return StreamingResponse(
+        _iter_chunks(),
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post(
+    "/studio/projects/{slug}/chapters/finalize",
+    response_model=StudioChapterFinalizeResponse,
+)
+def finalize_studio_chapter(
+    slug: str, payload: StudioChapterFinalizeRequest
+) -> StudioChapterFinalizeResponse:
+    settings = get_settings()
+    chapter_title = (payload.chapter_title or "").strip()
+    if not chapter_title:
+        raise HTTPException(status_code=400, detail="챕터 제목을 입력해 주세요.")
+    content = (payload.content or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="챕터 내용을 입력해 주세요.")
+
+    try:
+        project = read_studio_project(settings.output_dir, slug=slug)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    chapter = ChapterSummary(
+        chapter_index=payload.chapter_index,
+        chapter_title=chapter_title,
+        summary=content,
+        key_events=[],
+        character_events=[],
+        character_traits=[],
+    )
+    chapter_path = save_chapter_summary(
+        project["book_title"], chapter, root_dir=settings.output_dir
+    )
+    detail = read_book_detail(settings.output_dir, slug=slug)
+
+    return StudioChapterFinalizeResponse(
+        chapter_index=payload.chapter_index,
+        chapter_title=chapter_title,
+        file_name=chapter_path.name,
+        chapter_count=detail["chapter_count"],
+    )
+
+
+@app.get("/studio/series", response_model=list[StudioSeriesResponse])
+def get_studio_series_list() -> list[StudioSeriesResponse]:
+    settings = get_settings()
+    return [StudioSeriesResponse.model_validate(item) for item in list_series(settings.output_dir)]
+
+
+@app.post("/studio/series", response_model=StudioSeriesResponse)
+def create_studio_series(payload: StudioSeriesCreateRequest) -> StudioSeriesResponse:
+    settings = get_settings()
+    title = (payload.title or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="제목을 입력해 주세요.")
+
+    try:
+        series_path = save_series(
+            title,
+            premise=(payload.premise or "").strip(),
+            genre=(payload.genre or "").strip(),
+            language=(payload.language or "ko").strip() or "ko",
+            root_dir=settings.output_dir,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    slug = series_path.parent.name
+    series = read_series(settings.output_dir, slug=slug)
+    return StudioSeriesResponse(slug=slug, volumes=[], **series)
+
+
+@app.get("/studio/series/{slug}", response_model=StudioSeriesResponse)
+def get_studio_series(slug: str) -> StudioSeriesResponse:
+    settings = get_settings()
+    try:
+        series = read_series(settings.output_dir, slug=slug)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    volumes = list_series_volumes(settings.output_dir, series_slug=slug)
+    return StudioSeriesResponse(slug=slug, volumes=volumes, **series)
+
+
+@app.post("/studio/series/{slug}/volumes", response_model=StudioProjectResponse)
+def create_studio_volume(slug: str, payload: StudioVolumeCreateRequest) -> StudioProjectResponse:
+    settings = get_settings()
+    title = (payload.title or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="권 제목을 입력해 주세요.")
+
+    try:
+        series = read_series(settings.output_dir, slug=slug)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    try:
+        project_path = save_studio_project(
+            title,
+            premise=series.get("premise", ""),
+            genre=series.get("genre", ""),
+            language=series.get("language", "ko"),
+            root_dir=settings.output_dir,
+            book_format="long",
+            series_slug=slug,
+            volume_index=payload.volume_index,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    volume_slug = project_path.parent.name
+    bible = read_bible(settings.output_dir, slug=slug)
+    if bible["setting_markdown"] or bible["characters"]:
+        save_bible(
+            settings.output_dir,
+            slug=volume_slug,
+            setting_markdown=bible["setting_markdown"],
+            characters=bible["characters"],
+        )
+
+    project = read_studio_project(settings.output_dir, slug=volume_slug)
+    return StudioProjectResponse(slug=volume_slug, chapter_count=0, **project)
+
+
+def _get_bible_response(slug: str) -> StudioBibleResponse:
+    settings = get_settings()
+    bible = read_bible(settings.output_dir, slug=slug)
+    messages = read_bible_conversation(settings.output_dir, slug=slug)
+    return StudioBibleResponse(
+        setting_markdown=bible["setting_markdown"],
+        characters=bible["characters"],
+        messages=messages,
+    )
+
+
+def _finalize_bible(slug: str, payload: StudioBibleFinalizeRequest) -> StudioBibleResponse:
+    settings = get_settings()
+    save_bible(
+        settings.output_dir,
+        slug=slug,
+        setting_markdown=payload.setting_markdown,
+        characters=[character.model_dump() for character in payload.characters],
+    )
+    return _get_bible_response(slug)
+
+
+def _stream_bible_messages(
+    *,
+    slug: str,
+    payload: StudioMessageRequest,
+    title: str,
+    premise: str,
+    genre: str,
+) -> StreamingResponse:
+    settings = get_settings()
+    message = (payload.message or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="메시지를 입력해 주세요.")
+
+    try:
+        bible = read_bible(settings.output_dir, slug=slug)
+        history = read_bible_conversation(settings.output_dir, slug=slug)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    try:
+        summarizer = _build_summarizer(
+            provider=payload.provider,
+            api_key=payload.api_key,
+            model=payload.model,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    language = (payload.language or "ko").strip() or "ko"
+
+    now = datetime.now(tz=timezone.utc).isoformat()
+    user_turn = {"role": "user", "content": message, "created_at": now}
+    updated_history = history + [user_turn]
+    save_bible_conversation(settings.output_dir, slug=slug, messages=updated_history)
+
+    system_prompt = build_studio_bible_prompt(
+        title=title,
+        premise=premise,
+        genre=genre,
+        language=language,
+        existing_setting=bible["setting_markdown"],
+        existing_characters=bible["characters"],
+    )
+    llm_messages = [{"role": "system", "content": system_prompt}]
+    llm_messages.extend({"role": turn["role"], "content": turn["content"]} for turn in updated_history)
+
+    def _iter_chunks() -> Any:
+        collected: list[str] = []
+        try:
+            for chunk in summarizer.stream_with_messages(llm_messages):
+                if chunk:
+                    collected.append(chunk)
+                    yield chunk
+        except Exception as exc:  # noqa: BLE001
+            normalized_error = _normalize_error_message(exc)
+            logger.exception("[설정집 스트림 실패] slug=%s", slug)
+            yield f"\n\n[오류] 메시지 처리 중 오류가 발생했습니다: {normalized_error}"
+            return
+
+        assistant_turn = {
+            "role": "assistant",
+            "content": "".join(collected),
+            "created_at": datetime.now(tz=timezone.utc).isoformat(),
+        }
+        save_bible_conversation(
+            settings.output_dir,
+            slug=slug,
+            messages=updated_history + [assistant_turn],
+        )
+
+    return StreamingResponse(
+        _iter_chunks(),
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/studio/projects/{slug}/bible", response_model=StudioBibleResponse)
+def get_studio_book_bible(slug: str) -> StudioBibleResponse:
+    settings = get_settings()
+    try:
+        read_studio_project(settings.output_dir, slug=slug)
+        return _get_bible_response(slug)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/studio/projects/{slug}/bible/finalize", response_model=StudioBibleResponse)
+def finalize_studio_book_bible(slug: str, payload: StudioBibleFinalizeRequest) -> StudioBibleResponse:
+    settings = get_settings()
+    try:
+        read_studio_project(settings.output_dir, slug=slug)
+        return _finalize_bible(slug, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/studio/projects/{slug}/bible/messages/stream")
+def studio_book_bible_stream(slug: str, payload: StudioMessageRequest) -> StreamingResponse:
+    settings = get_settings()
+    try:
+        project = read_studio_project(settings.output_dir, slug=slug)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return _stream_bible_messages(
+        slug=slug,
+        payload=payload,
+        title=project["book_title"],
+        premise=project.get("premise", ""),
+        genre=project.get("genre", ""),
+    )
+
+
+@app.get("/studio/series/{slug}/bible", response_model=StudioBibleResponse)
+def get_studio_series_bible(slug: str) -> StudioBibleResponse:
+    settings = get_settings()
+    try:
+        read_series(settings.output_dir, slug=slug)
+        return _get_bible_response(slug)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/studio/series/{slug}/bible/finalize", response_model=StudioBibleResponse)
+def finalize_studio_series_bible(slug: str, payload: StudioBibleFinalizeRequest) -> StudioBibleResponse:
+    settings = get_settings()
+    try:
+        read_series(settings.output_dir, slug=slug)
+        return _finalize_bible(slug, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/studio/series/{slug}/bible/messages/stream")
+def studio_series_bible_stream(slug: str, payload: StudioMessageRequest) -> StreamingResponse:
+    settings = get_settings()
+    try:
+        series = read_series(settings.output_dir, slug=slug)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return _stream_bible_messages(
+        slug=slug,
+        payload=payload,
+        title=series["series_title"],
+        premise=series.get("premise", ""),
+        genre=series.get("genre", ""),
+    )
+
+
 @app.post("/books/{book_slug}/audiobook", response_model=AudiobookCreateResponse)
 def create_audiobook(book_slug: str, payload: AudiobookCreateRequest) -> AudiobookCreateResponse:
     settings = get_settings()
@@ -1091,4 +1575,98 @@ def create_audiobook(book_slug: str, payload: AudiobookCreateRequest) -> Audiobo
         line_count=synthesis.line_count,
         chapter_count=synthesis.chapter_count,
         voice_count=synthesis.voice_count,
+    )
+
+
+@app.post("/books/{book_slug}/chat-script", response_model=ChatScriptResponse)
+def create_chat_script(book_slug: str, payload: ChatScriptCreateRequest) -> ChatScriptResponse:
+    settings = get_settings()
+
+    try:
+        snapshot = read_book_summary_snapshot(settings.output_dir, slug=book_slug)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    try:
+        llm_summarizer = _build_summarizer(
+            provider=payload.provider,
+            api_key=payload.api_key,
+            model=payload.model,
+        )
+        generator = AudiobookGenerator(
+            llm_client=llm_summarizer.client,
+            llm_model=llm_summarizer.model,
+        )
+        script_bundle = generator.generate_chapter_scripts(
+            book_title=snapshot["book_title"],
+            chapter_summaries=snapshot["chapter_summaries"],
+            character_summaries_text=snapshot["character_summaries_text"],
+            language=payload.language,
+            target_minutes=payload.target_minutes,
+        )
+
+        output_dir = Path(settings.output_dir) / book_slug / "chat"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        script_path = output_dir / "script.json"
+        script_path.write_text(script_bundle.model_dump_json(indent=2), encoding="utf-8")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[채팅형 변환 실패] slug='%s'", book_slug)
+        raise HTTPException(status_code=500, detail=f"채팅형 변환 중 오류: {exc}") from exc
+
+    return ChatScriptResponse(
+        book_slug=book_slug,
+        book_title=snapshot["book_title"],
+        script_path=str(script_path),
+        chapter_count=len(script_bundle.chapters),
+        line_count=sum(len(chapter.lines) for chapter in script_bundle.chapters),
+        chapters=[
+            ChatScriptChapter(
+                chapter_index=chapter.chapter_index,
+                chapter_title=chapter.chapter_title,
+                lines=chapter.lines,
+            )
+            for chapter in script_bundle.chapters
+        ],
+    )
+
+
+@app.get("/books/{book_slug}/chat-script", response_model=ChatScriptResponse)
+def get_chat_script(book_slug: str) -> ChatScriptResponse:
+    settings = get_settings()
+
+    try:
+        snapshot = read_book_summary_snapshot(settings.output_dir, slug=book_slug)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    script_path = Path(settings.output_dir) / book_slug / "chat" / "script.json"
+    if not script_path.exists():
+        raise HTTPException(status_code=404, detail="채팅형 대본이 아직 생성되지 않았습니다.")
+
+    try:
+        payload = json.loads(script_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise HTTPException(status_code=500, detail="채팅형 대본을 읽을 수 없습니다.") from exc
+
+    chapters = [
+        ChatScriptChapter(
+            chapter_index=chapter.get("chapter_index", 0),
+            chapter_title=chapter.get("chapter_title", ""),
+            lines=[AudioScriptLine(**line) for line in chapter.get("lines", [])],
+        )
+        for chapter in payload.get("chapters", [])
+    ]
+    return ChatScriptResponse(
+        book_slug=book_slug,
+        book_title=snapshot["book_title"],
+        script_path=str(script_path),
+        chapter_count=len(chapters),
+        line_count=sum(len(chapter.lines) for chapter in chapters),
+        chapters=chapters,
     )

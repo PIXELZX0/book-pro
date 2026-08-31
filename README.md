@@ -13,6 +13,7 @@ It also provides:
 - A page-flip style reader in Book Detail (Google Play Books-like flow)
 - Server-side reading progress persistence for cross-browser/device resume
 - Audiobook generation (chapter scripts + Qwen3 Voice Design + Base Voice Clone + TTS synthesis)
+- Chat-style novel conversion (messenger-style speaker/text script, rendered as chat bubbles in the web panel)
 
 ## Key Features
 
@@ -40,7 +41,7 @@ Set `OPENAI_API_KEY` in `.env`.
 Main environment variables:
 
 - `OPENAI_API_KEY`: default API key used when request-level key is omitted
-- `BOOK_PRO_PROVIDER`: default provider (`openai`, `anthropic`, `openrouter`, `venice`, `kilo-code`)
+- `BOOK_PRO_PROVIDER`: default provider (`openai`, `anthropic`, `openrouter`, `venice`, `kilo-code`, `opencode-go`)
 - `BOOK_PRO_MODEL`: default model
 - `BOOK_PRO_MAX_CHAPTERS`: optional chapter limit per request (`0`/unset = unlimited)
 - `BOOK_PRO_CHAPTER_PARALLEL`: per-book chapter workers (`1` to `8`, default `3`)
@@ -84,7 +85,8 @@ docker compose up --build -d
 ## 4) URLs
 
 - Swagger UI: <http://127.0.0.1:8000/docs>
-- Web Panel: <http://127.0.0.1:8000/panel>
+- Web Panel (Library/Reader): <http://127.0.0.1:8000/panel>
+- Studio (AI co-writing): <http://127.0.0.1:8000/studio>
 - Agent Skill Doc: <http://127.0.0.1:8000/skill.md>
 
 ## 5) API Usage
@@ -233,6 +235,29 @@ Pipeline summary:
 - `Qwen3 Base Voice Clone`: clone the designed base voices
 - `Qwen3 TTS synthesis`: per-line -> per-chapter -> final audiobook merge
 
+### Chat-style conversion
+
+Generate a chat-style script (speaker/text lines, same generator as the audiobook script step, no TTS):
+
+```bash
+curl -X POST "http://127.0.0.1:8000/books/book-your-book-slug/chat-script" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "openai",
+    "model": "gpt-4.1-mini",
+    "api_key": "YOUR_PROVIDER_API_KEY",
+    "language": "en"
+  }'
+```
+
+Fetch a previously generated script:
+
+```bash
+curl -X GET "http://127.0.0.1:8000/books/book-your-book-slug/chat-script"
+```
+
+Output stored at `books/book-<title>/chat/script.json`. In the web panel, open a book and use the **Chat** tab to generate/view it as a chat-bubble reading mode.
+
 ## 6) Local vLLM-Omni for Qwen3 TTS
 
 If `tts_base_url` points to localhost/127.0.0.1, missing `tts_api_key` is automatically treated as `none`.
@@ -344,6 +369,8 @@ books/
     character/
       <character-name>.md
     setting.md
+    chat/
+      script.json
     audiobook/
       script.json
       chapter-scripts/

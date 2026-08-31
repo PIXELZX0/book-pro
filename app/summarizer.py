@@ -39,6 +39,10 @@ _PROVIDER_ALIASES = {
     "kilo-code": "kilo-code",
     "kilo_code": "kilo-code",
     "kilo code": "kilo-code",
+    "opencode-go": "opencode-go",
+    "opencode_go": "opencode-go",
+    "opencode go": "opencode-go",
+    "opencodego": "opencode-go",
 }
 
 _PROVIDER_BASE_URL = {
@@ -47,6 +51,7 @@ _PROVIDER_BASE_URL = {
     "openrouter": "https://openrouter.ai/api/v1",
     "venice": "https://api.venice.ai/api/v1",
     "kilo-code": "https://api.kilo.ai/api/gateway",
+    "opencode-go": "https://opencode.ai/zen/go/v1",
 }
 
 _PROVIDER_DEFAULT_MODEL = {
@@ -55,6 +60,7 @@ _PROVIDER_DEFAULT_MODEL = {
     "openrouter": "openai/gpt-4.1-mini",
     "venice": "venice-uncensored",
     "kilo-code": "anthropic/claude-sonnet-4.5",
+    "opencode-go": "claude-sonnet-4-5",
 }
 
 logger = logging.getLogger("uvicorn.error")
@@ -566,6 +572,16 @@ class MultiProviderBookSummarizer:
         content = _extract_content_text(response.choices[0].message.content)
         return _parse_json_object(content or "{}")
 
+    def _stream_chat(self, request_kwargs: dict[str, Any]) -> Iterator[str]:
+        stream = self.client.chat.completions.create(**request_kwargs)
+        for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            text = _extract_content_text(getattr(delta, "content", None))
+            if text:
+                yield text
+
     def _chat_text_stream(self, user_prompt: str, *, system_prompt: str) -> Iterator[str]:
         request_kwargs: dict[str, Any] = {
             "model": self.model,
@@ -583,14 +599,23 @@ class MultiProviderBookSummarizer:
                 "X-Title": "book-pro",
             }
 
-        stream = self.client.chat.completions.create(**request_kwargs)
-        for chunk in stream:
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta
-            text = _extract_content_text(getattr(delta, "content", None))
-            if text:
-                yield text
+        yield from self._stream_chat(request_kwargs)
+
+    def stream_with_messages(self, messages: list[dict[str, str]]) -> Iterator[str]:
+        request_kwargs: dict[str, Any] = {
+            "model": self.model,
+            "temperature": 0.4,
+            "stream": True,
+            "messages": messages,
+        }
+
+        if self.provider == "openrouter":
+            request_kwargs["extra_headers"] = {
+                "HTTP-Referer": "http://localhost",
+                "X-Title": "book-pro",
+            }
+
+        yield from self._stream_chat(request_kwargs)
 
     def answer_about_book(
         self,

@@ -22,6 +22,7 @@
 
         <nav class="nav">
           <button class="nav-item active" id="nav-library" type="button" data-i18n="nav_library">Library</button>
+          <a class="nav-item" id="nav-studio" href="/studio">Studio</a>
           <button class="nav-item" id="nav-settings" type="button" data-i18n="nav_settings">Settings</button>
         </nav>
       </aside>
@@ -123,6 +124,7 @@
                 <button class="tab" data-tab="character" type="button" data-i18n="tab_character">Character</button>
                 <button class="tab" data-tab="world" type="button" data-i18n="tab_world">World</button>
                 <button class="tab" data-tab="reader" type="button" data-i18n="tab_reader">Reader</button>
+                <button class="tab" data-tab="chat" type="button" data-i18n="tab_chat">Chat</button>
                 <button class="tab" data-tab="ask-book" type="button" data-i18n="tab_ask_book">Ask about book</button>
                 <button class="tab" data-tab="ask-character" type="button" data-i18n="tab_ask_character">Talk with character</button>
               </div>
@@ -131,6 +133,7 @@
               <div id="tab-character" class="tab-panel"></div>
               <div id="tab-world" class="tab-panel"></div>
               <div id="tab-reader" class="tab-panel"></div>
+              <div id="tab-chat" class="tab-panel"></div>
               <div id="tab-ask-book" class="tab-panel">
                 <div class="ask-panel">
                   <label class="field">
@@ -194,6 +197,7 @@
                   <option value="openrouter">OpenRouter</option>
                   <option value="venice">Venice</option>
                   <option value="kilo-code">Kilo Code</option>
+                  <option value="opencode-go">OpenCode Go</option>
                 </select>
               </label>
               <label class="field">
@@ -270,6 +274,10 @@
               <label class="field">
                 <span>Kilo Code API Key</span>
                 <input id="api-key-kilo-code" type="password" placeholder="kilo-..." />
+              </label>
+              <label class="field">
+                <span>OpenCode Go API Key</span>
+                <input id="api-key-opencode-go" type="password" placeholder="oc-..." />
               </label>
             </div>
             <p class="settings-hint" id="settings-active-summary"></p>

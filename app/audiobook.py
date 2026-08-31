@@ -139,10 +139,10 @@ class AudiobookGenerator:
         *,
         llm_client: OpenAI,
         llm_model: str,
-        tts_client: OpenAI,
-        tts_model: str,
-        tts_base_url: str,
-        tts_api_key: str,
+        tts_client: OpenAI | None = None,
+        tts_model: str = "",
+        tts_base_url: str = "",
+        tts_api_key: str = "",
     ) -> None:
         self.llm_client = llm_client
         self.llm_model = llm_model

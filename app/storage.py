@@ -4,6 +4,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from app.epub_parser import parse_epub
 from app.schemas import (
@@ -226,6 +227,16 @@ def _book_title_from_setting(book_dir: Path, fallback_slug: str) -> str:
     return fallback_slug
 
 
+def _display_title(book_dir: Path, fallback_slug: str) -> str:
+    if is_studio_book(book_dir):
+        try:
+            project = json.loads((book_dir / _STUDIO_PROJECT_FILE).read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            project = {}
+        return project.get("book_title") or fallback_slug
+    return _book_title_from_setting(book_dir, fallback_slug)
+
+
 def list_books(root_dir: str | Path, *, page: int = 1, page_size: int = 10) -> dict:
     root = Path(root_dir)
     books = []
@@ -245,11 +256,13 @@ def list_books(root_dir: str | Path, *, page: int = 1, page_size: int = 10) -> d
         books.append(
             {
                 "slug": slug,
-                "book_title": _book_title_from_setting(book_dir, display_title),
+                "book_title": _display_title(book_dir, display_title),
                 "chapter_count": chapter_count,
                 "character_count": character_count,
                 "status": status,
                 "updated_at": _to_iso_utc(latest_ts),
+                "is_studio": is_studio_book(book_dir),
+                "series_slug": _studio_series_slug(book_dir),
                 "_latest_ts": latest_ts,
             }
         )
@@ -332,13 +345,14 @@ def read_book_detail(root_dir: str | Path, *, slug: str) -> dict:
 
     return {
         "slug": slug,
-        "book_title": _book_title_from_setting(book_dir, display_title),
+        "book_title": _display_title(book_dir, display_title),
         "updated_at": _to_iso_utc(latest_ts),
         "chapter_count": len(chapters),
         "character_count": len(characters),
         "chapters": chapters,
         "characters": characters,
         "setting_markdown": setting_markdown,
+        "is_studio": is_studio_book(book_dir),
     }
 
 
@@ -472,6 +486,266 @@ def ensure_book_directories(book_title: str, *, root_dir: str | Path = "books") 
     (book_dir / "chapter").mkdir(parents=True, exist_ok=True)
     (book_dir / "character").mkdir(parents=True, exist_ok=True)
     return book_dir
+
+
+_STUDIO_PROJECT_FILE = "studio.json"
+_STUDIO_CONVERSATION_FILE = "studio/conversation.json"
+
+
+def is_studio_book(book_dir: Path) -> bool:
+    return (book_dir / _STUDIO_PROJECT_FILE).exists()
+
+
+def _studio_series_slug(book_dir: Path) -> str | None:
+    project_path = book_dir / _STUDIO_PROJECT_FILE
+    if not project_path.exists():
+        return None
+    try:
+        data = json.loads(project_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return data.get("series_slug")
+
+
+def save_studio_project(
+    book_title: str,
+    *,
+    premise: str,
+    genre: str,
+    language: str,
+    root_dir: str | Path = "books",
+    book_format: str = "short",
+    series_slug: str | None = None,
+    volume_index: int | None = None,
+) -> Path:
+    root = Path(root_dir)
+    book_dir = root / _book_dir_name(book_title)
+    if book_dir.exists() and not is_studio_book(book_dir):
+        raise ValueError(f"이미 존재하는 책과 이름이 겹칩니다: {book_title}")
+
+    ensure_book_directories(book_title, root_dir=root_dir)
+    payload: dict[str, Any] = {
+        "book_title": book_title,
+        "premise": premise,
+        "genre": genre,
+        "language": language,
+        "format": book_format,
+        "created_at": _to_iso_utc(datetime.now(timezone.utc).timestamp()),
+    }
+    if series_slug is not None:
+        payload["series_slug"] = series_slug
+        payload["volume_index"] = volume_index
+
+    project_path = book_dir / _STUDIO_PROJECT_FILE
+    project_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return project_path
+
+
+def read_studio_project(root_dir: str | Path, *, slug: str) -> dict:
+    root = Path(root_dir)
+    book_dir = _safe_book_path(root, slug)
+    project_path = book_dir / _STUDIO_PROJECT_FILE
+    if not project_path.exists():
+        raise FileNotFoundError(f"스튜디오 프로젝트를 찾을 수 없습니다: {slug}")
+    return json.loads(project_path.read_text(encoding="utf-8"))
+
+
+def read_studio_conversation(root_dir: str | Path, *, slug: str) -> list[dict]:
+    root = Path(root_dir)
+    book_dir = _safe_book_path(root, slug)
+    conversation_path = book_dir / _STUDIO_CONVERSATION_FILE
+    if not conversation_path.exists():
+        return []
+    try:
+        payload = json.loads(conversation_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    return payload.get("messages", [])
+
+
+def save_studio_conversation(root_dir: str | Path, *, slug: str, messages: list[dict]) -> Path:
+    root = Path(root_dir)
+    book_dir = _safe_book_path(root, slug)
+    conversation_path = book_dir / _STUDIO_CONVERSATION_FILE
+    conversation_path.parent.mkdir(parents=True, exist_ok=True)
+    conversation_path.write_text(
+        json.dumps({"messages": messages}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return conversation_path
+
+
+def _series_dir_name(series_title: str) -> str:
+    return f"series-{_slug_part(series_title, 'unknown-series')}"
+
+
+def save_series(
+    series_title: str,
+    *,
+    premise: str,
+    genre: str,
+    language: str,
+    root_dir: str | Path = "books",
+) -> Path:
+    root = Path(root_dir)
+    series_dir = root / _series_dir_name(series_title)
+    if series_dir.exists():
+        raise ValueError(f"이미 존재하는 시리즈와 이름이 겹칩니다: {series_title}")
+
+    series_dir.mkdir(parents=True, exist_ok=True)
+    (series_dir / "character").mkdir(parents=True, exist_ok=True)
+    series_path = series_dir / "series.json"
+    series_path.write_text(
+        json.dumps(
+            {
+                "series_title": series_title,
+                "premise": premise,
+                "genre": genre,
+                "language": language,
+                "created_at": _to_iso_utc(datetime.now(timezone.utc).timestamp()),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return series_path
+
+
+def read_series(root_dir: str | Path, *, slug: str) -> dict:
+    root = Path(root_dir)
+    series_dir = _safe_book_path(root, slug)
+    series_path = series_dir / "series.json"
+    if not series_path.exists():
+        raise FileNotFoundError(f"시리즈를 찾을 수 없습니다: {slug}")
+    return json.loads(series_path.read_text(encoding="utf-8"))
+
+
+def list_series(root_dir: str | Path) -> list[dict]:
+    root = Path(root_dir)
+    if not root.exists():
+        return []
+    series_list = []
+    for series_dir in sorted(root.iterdir(), key=lambda p: p.name):
+        if not series_dir.is_dir() or not series_dir.name.startswith("series-"):
+            continue
+        series_path = series_dir / "series.json"
+        if not series_path.exists():
+            continue
+        try:
+            data = json.loads(series_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        slug = series_dir.name
+        series_list.append(
+            {
+                "slug": slug,
+                "series_title": data.get("series_title", slug),
+                "premise": data.get("premise", ""),
+                "genre": data.get("genre", ""),
+                "language": data.get("language", "ko"),
+                "created_at": data.get("created_at", ""),
+                "volumes": list_series_volumes(root_dir, series_slug=slug),
+            }
+        )
+    return series_list
+
+
+def list_series_volumes(root_dir: str | Path, *, series_slug: str) -> list[dict]:
+    root = Path(root_dir)
+    volumes = []
+    for book_dir in _book_dirs(root):
+        studio_path = book_dir / _STUDIO_PROJECT_FILE
+        if not studio_path.exists():
+            continue
+        try:
+            data = json.loads(studio_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if data.get("series_slug") != series_slug:
+            continue
+        volumes.append(
+            {
+                "slug": book_dir.name,
+                "volume_index": data.get("volume_index") or 0,
+                "book_title": data.get("book_title", book_dir.name),
+                "chapter_count": len(list((book_dir / "chapter").glob("*.md"))),
+            }
+        )
+    volumes.sort(key=lambda volume: volume["volume_index"])
+    return volumes
+
+
+_BIBLE_CONVERSATION_FILE = "studio/bible-conversation.json"
+
+
+def read_bible_conversation(root_dir: str | Path, *, slug: str) -> list[dict]:
+    root = Path(root_dir)
+    container_dir = _safe_book_path(root, slug)
+    path = container_dir / _BIBLE_CONVERSATION_FILE
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    return payload.get("messages", [])
+
+
+def save_bible_conversation(root_dir: str | Path, *, slug: str, messages: list[dict]) -> Path:
+    root = Path(root_dir)
+    container_dir = _safe_book_path(root, slug)
+    path = container_dir / _BIBLE_CONVERSATION_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"messages": messages}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return path
+
+
+def read_bible(root_dir: str | Path, *, slug: str) -> dict:
+    root = Path(root_dir)
+    container_dir = _safe_book_path(root, slug)
+    setting_path = container_dir / "setting.md"
+    setting_markdown = (
+        setting_path.read_text(encoding="utf-8", errors="ignore") if setting_path.exists() else ""
+    )
+    character_dir = container_dir / "character"
+    characters = []
+    if character_dir.exists():
+        for char_path in sorted(character_dir.glob("*.md"), key=lambda p: p.name):
+            characters.append(
+                {
+                    "name": char_path.stem,
+                    "markdown": char_path.read_text(encoding="utf-8", errors="ignore"),
+                }
+            )
+    return {"setting_markdown": setting_markdown, "characters": characters}
+
+
+def save_bible(
+    root_dir: str | Path,
+    *,
+    slug: str,
+    setting_markdown: str,
+    characters: list[dict],
+) -> None:
+    root = Path(root_dir)
+    container_dir = _safe_book_path(root, slug)
+    (container_dir / "setting.md").write_text(setting_markdown, encoding="utf-8")
+
+    character_dir = container_dir / "character"
+    character_dir.mkdir(parents=True, exist_ok=True)
+    for old_path in character_dir.glob("*.md"):
+        old_path.unlink(missing_ok=True)
+    for character in characters:
+        name = (character.get("name") or "").strip() or "이름없음"
+        file_name = f"{_slug_part(name, 'character')}.md"
+        (character_dir / file_name).write_text(character.get("markdown", ""), encoding="utf-8")
 
 
 def clear_book_summary_outputs(book_title: str, *, root_dir: str | Path = "books") -> Path:

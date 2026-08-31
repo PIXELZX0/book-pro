@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>book-pro Studio</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Playfair+Display:ital,wght@0,600;1,600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand-wrap">
+          <div class="brand">book-pro</div>
+          <div class="brand-sub">AI Writing Studio</div>
+        </div>
+
+        <nav class="nav">
+          <a class="nav-item" id="nav-panel" href="/panel">Panel</a>
+          <span class="nav-item active">Studio</span>
+        </nav>
+      </aside>
+
+      <main class="main">
+        <section id="view-studio" class="view active">
+          <header class="view-header">
+            <div>
+              <h1 class="title">Studio</h1>
+              <p class="subtitle">AI와 함께 챕터 단위로 책을 집필하는 전용 페이지입니다.</p>
+            </div>
+          </header>
+
+          <section class="detail-layout">
+            <aside class="panel detail-side">
+              <h2 class="panel-title">Projects</h2>
+              <div id="studio-project-list"></div>
+              <label class="field">
+                <span>Format</span>
+                <select id="studio-new-format-select">
+                  <option value="short">단편 (한 권)</option>
+                  <option value="long">장편 (시리즈, 여러 권)</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Title</span>
+                <input id="studio-new-title-input" type="text" placeholder="새 책/시리즈 제목" />
+              </label>
+              <label class="field">
+                <span>Genre</span>
+                <input id="studio-new-genre-input" type="text" placeholder="예: 판타지" />
+              </label>
+              <label class="field">
+                <span>Premise</span>
+                <textarea id="studio-new-premise-input" rows="3" placeholder="줄거리/기획 의도를 입력하세요"></textarea>
+              </label>
+              <button id="studio-create-btn" class="btn btn-primary full" type="button">New Project</button>
+            </aside>
+
+            <section class="panel detail-main">
+              <div id="studio-empty-state" class="ask-panel">
+                왼쪽에서 프로젝트를 선택하거나 새로 만들어 주세요.
+              </div>
+
+              <div id="studio-series-area" class="hidden">
+                <div class="ask-panel">
+                  <h3 id="studio-series-title"></h3>
+                  <button id="studio-series-bible-btn" class="btn btn-ghost" type="button">설정집 (세계관/캐릭터)</button>
+                </div>
+                <div class="ask-panel">
+                  <div id="studio-volume-list"></div>
+                  <label class="field">
+                    <span>New volume title</span>
+                    <input id="studio-new-volume-title-input" type="text" placeholder="예: 1권 - 시작" />
+                  </label>
+                  <label class="field">
+                    <span>Volume number</span>
+                    <input id="studio-new-volume-index-input" type="number" min="1" step="1" value="1" />
+                  </label>
+                  <button id="studio-add-volume-btn" class="btn btn-primary" type="button">Add volume</button>
+                </div>
+              </div>
+
+              <div id="studio-chat-area" class="hidden">
+                <div class="ask-panel">
+                  <button id="studio-book-bible-btn" class="btn btn-ghost" type="button">설정집 (세계관/캐릭터)</button>
+                </div>
+                <div class="chat-card">
+                  <div class="chat-toolbar">
+                    <button id="studio-finalize-btn" class="btn btn-ghost" type="button">Finalize as chapter</button>
+                  </div>
+                  <div id="studio-chat-scroll" class="chat-scroll"></div>
+                </div>
+                <div id="studio-finalize-form" class="ask-panel hidden">
+                  <label class="field">
+                    <span>Chapter number</span>
+                    <input id="studio-finalize-index-input" type="number" min="1" step="1" value="1" />
+                  </label>
+                  <label class="field">
+                    <span>Chapter title</span>
+                    <input id="studio-finalize-title-input" type="text" placeholder="챕터 제목" />
+                  </label>
+                  <label class="field">
+                    <span>Content</span>
+                    <textarea id="studio-finalize-content-input" rows="8"></textarea>
+                  </label>
+                  <button id="studio-finalize-save-btn" class="btn btn-primary" type="button">Save chapter</button>
+                  <button id="studio-finalize-cancel-btn" class="btn btn-ghost" type="button">Cancel</button>
+                </div>
+                <div class="ask-panel">
+                  <label class="field">
+                    <span>Message</span>
+                    <textarea id="studio-message-input" rows="4" placeholder="AI와 대화하며 다음 내용을 이어가 보세요"></textarea>
+                  </label>
+                  <button id="studio-send-btn" class="btn btn-primary" type="button">Send</button>
+                </div>
+              </div>
+
+              <div id="studio-bible-area" class="hidden">
+                <div class="ask-panel">
+                  <button id="studio-bible-back-btn" class="btn btn-ghost" type="button">← Back</button>
+                </div>
+                <div class="chat-card">
+                  <div id="studio-bible-chat-scroll" class="chat-scroll"></div>
+                </div>
+                <div class="ask-panel">
+                  <label class="field">
+                    <span>Message</span>
+                    <textarea id="studio-bible-message-input" rows="3" placeholder="세계관/캐릭터를 AI와 상의해 보세요"></textarea>
+                  </label>
+                  <button id="studio-bible-send-btn" class="btn btn-primary" type="button">Send</button>
+                </div>
+                <div class="ask-panel">
+                  <label class="field">
+                    <span>World / Setting</span>
+                    <textarea id="studio-bible-setting-input" rows="6"></textarea>
+                  </label>
+                  <label class="field">
+                    <span>Characters (각 캐릭터는 "## 이름"으로 구분)</span>
+                    <textarea id="studio-bible-characters-input" rows="10" placeholder="## 캐릭터이름&#10;설명..."></textarea>
+                  </label>
+                  <button id="studio-bible-save-btn" class="btn btn-primary" type="button">Save setting bible</button>
+                </div>
+              </div>
+            </section>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script src="/static/studio.js"></script>
+  </body>
+</html>

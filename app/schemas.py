@@ -101,6 +101,8 @@ class BookListItem(BaseModel):
     character_count: int
     status: str
     updated_at: str
+    is_studio: bool = False
+    series_slug: str | None = None
 
 
 class BookListResponse(BaseModel):
@@ -132,6 +134,7 @@ class BookDetailResponse(BaseModel):
     chapters: List[BookChapterFile] = Field(default_factory=list)
     characters: List[BookCharacterFile] = Field(default_factory=list)
     setting_markdown: str = ""
+    is_studio: bool = False
 
 
 class BookReaderChapter(BaseModel):
@@ -201,6 +204,102 @@ class BookAskResponse(BaseModel):
     character_name: str | None = None
 
 
+class StudioMessage(BaseModel):
+    role: str
+    content: str
+    created_at: str | None = None
+
+
+class StudioProjectCreateRequest(BaseModel):
+    title: str
+    premise: str = ""
+    genre: str = ""
+    language: str = "ko"
+
+
+class StudioProjectResponse(BaseModel):
+    slug: str
+    book_title: str
+    premise: str
+    genre: str
+    language: str
+    chapter_count: int
+    created_at: str
+    format: str = "short"
+    series_slug: str | None = None
+    volume_index: int | None = None
+
+
+class StudioProjectDetailResponse(StudioProjectResponse):
+    messages: List[StudioMessage] = Field(default_factory=list)
+
+
+class StudioMessageRequest(BaseModel):
+    message: str
+    provider: str | None = None
+    api_key: str | None = None
+    model: str | None = None
+    language: str = "ko"
+
+
+class StudioChapterFinalizeRequest(BaseModel):
+    chapter_index: int = Field(ge=1)
+    chapter_title: str
+    content: str
+
+
+class StudioChapterFinalizeResponse(BaseModel):
+    chapter_index: int
+    chapter_title: str
+    file_name: str
+    chapter_count: int
+
+
+class StudioBibleCharacter(BaseModel):
+    name: str
+    markdown: str = ""
+
+
+class StudioBibleFinalizeRequest(BaseModel):
+    setting_markdown: str = ""
+    characters: List[StudioBibleCharacter] = Field(default_factory=list)
+
+
+class StudioBibleResponse(BaseModel):
+    setting_markdown: str = ""
+    characters: List[StudioBibleCharacter] = Field(default_factory=list)
+    messages: List[StudioMessage] = Field(default_factory=list)
+
+
+class StudioSeriesCreateRequest(BaseModel):
+    title: str
+    premise: str = ""
+    genre: str = ""
+    language: str = "ko"
+
+
+class StudioVolumeSummary(BaseModel):
+    slug: str
+    volume_index: int
+    book_title: str
+    chapter_count: int
+
+
+class StudioSeriesResponse(BaseModel):
+    slug: str
+    series_title: str
+    premise: str
+    genre: str
+    language: str
+    created_at: str
+    volumes: List[StudioVolumeSummary] = Field(default_factory=list)
+
+
+class StudioVolumeCreateRequest(BaseModel):
+    title: str
+    volume_index: int = Field(ge=1)
+
+
 class AudioScriptLine(BaseModel):
     speaker: str = Field(default="narrator")
     text: str = Field(default="")
@@ -243,3 +342,26 @@ class AudiobookCreateResponse(BaseModel):
     line_count: int
     chapter_count: int
     voice_count: int
+
+
+class ChatScriptChapter(BaseModel):
+    chapter_index: int
+    chapter_title: str
+    lines: List[AudioScriptLine] = Field(default_factory=list)
+
+
+class ChatScriptCreateRequest(BaseModel):
+    provider: str | None = None
+    api_key: str | None = None
+    model: str | None = None
+    language: str = "ko"
+    target_minutes: int = Field(default=15, ge=3, le=180)
+
+
+class ChatScriptResponse(BaseModel):
+    book_slug: str
+    book_title: str
+    script_path: str
+    chapter_count: int
+    line_count: int
+    chapters: List[ChatScriptChapter] = Field(default_factory=list)

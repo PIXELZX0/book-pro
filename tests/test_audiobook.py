@@ -2,7 +2,13 @@ import base64
 
 import pytest
 
-from app.audiobook import _decode_audio_data, _resolve_qwen_customization_endpoint
+from app.audiobook import AudiobookGenerator, _decode_audio_data, _resolve_qwen_customization_endpoint
+
+
+def test_audiobook_generator_allows_script_only_construction() -> None:
+    generator = AudiobookGenerator(llm_client=object(), llm_model="gpt-4.1-mini")
+    assert generator.tts_client is None
+    assert generator.tts_model == ""
 
 
 def test_resolve_qwen_customization_endpoint_for_dashscope() -> None:

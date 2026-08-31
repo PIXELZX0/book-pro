@@ -1,4 +1,4 @@
-const PROVIDERS = ["open-ai", "anthropic", "openrouter", "venice", "kilo-code"];
+const PROVIDERS = ["open-ai", "anthropic", "openrouter", "venice", "kilo-code", "opencode-go"];
 
 const PROVIDER_LABEL = {
   "open-ai": "OPEN-AI",
@@ -6,6 +6,7 @@ const PROVIDER_LABEL = {
   openrouter: "OpenRouter",
   venice: "Venice",
   "kilo-code": "Kilo Code",
+  "opencode-go": "OpenCode Go",
 };
 
 const DEFAULT_MODEL_BY_PROVIDER = {
@@ -14,6 +15,7 @@ const DEFAULT_MODEL_BY_PROVIDER = {
   openrouter: "openai/gpt-4.1-mini",
   venice: "venice-uncensored",
   "kilo-code": "anthropic/claude-sonnet-4.5",
+  "opencode-go": "claude-sonnet-4-5",
 };
 
 const MODEL_OPTIONS_BY_PROVIDER = {
@@ -22,6 +24,7 @@ const MODEL_OPTIONS_BY_PROVIDER = {
   openrouter: ["openai/gpt-4.1-mini", "openai/gpt-4.1", "anthropic/claude-sonnet-4", "google/gemini-2.5-pro"],
   venice: ["venice-uncensored", "llama-3.3-70b", "qwen2.5-72b-instruct"],
   "kilo-code": ["anthropic/claude-sonnet-4.5", "openai/gpt-4.1-mini", "google/gemini-2.5-pro"],
+  "opencode-go": ["claude-sonnet-4-5", "gpt-5", "grok-4"],
 };
 
 const CUSTOM_MODEL_VALUE = "__custom__";
@@ -71,6 +74,14 @@ const I18N_MESSAGES = {
     tab_character: "캐릭터",
     tab_world: "세계관",
     tab_reader: "리더",
+    tab_chat: "채팅형",
+    chat_loading: "채팅형 대본을 불러오는 중입니다.",
+    chat_empty: "아직 생성된 채팅형 대본이 없습니다.",
+    chat_generate_btn: "채팅형으로 변환",
+    chat_regenerate_btn: "다시 생성",
+    chat_generating: "채팅형 대본 생성 중입니다. 잠시만 기다려주세요.",
+    chat_generate_done: "채팅형 변환이 완료되었습니다.",
+    chat_generate_failed: "채팅형 변환에 실패했습니다.",
     tab_ask: "질문",
     tab_ask_book: "책에 대해 물어보기",
     tab_ask_character: "캐릭터와 대화하기",
@@ -207,6 +218,14 @@ const I18N_MESSAGES = {
     tab_character: "Character",
     tab_world: "World",
     tab_reader: "Reader",
+    tab_chat: "Chat",
+    chat_loading: "Loading chat script...",
+    chat_empty: "No chat script generated yet.",
+    chat_generate_btn: "Convert to chat",
+    chat_regenerate_btn: "Regenerate",
+    chat_generating: "Generating chat script, please wait...",
+    chat_generate_done: "Chat script generated.",
+    chat_generate_failed: "Failed to generate chat script.",
     tab_ask: "Ask",
     tab_ask_book: "Ask about book",
     tab_ask_character: "Talk with character",
@@ -493,6 +512,7 @@ const state = {
   readerProgress: {},
   readerProgressSync: {},
   readerRuntime: null,
+  chatCache: null,
   currentTab: "chapter",
   currentView: "library",
   uploading: false,
@@ -513,6 +533,7 @@ const state = {
       openrouter: "",
       venice: "",
       "kilo-code": "",
+      "opencode-go": "",
     },
   },
 };
@@ -540,6 +561,7 @@ const el = {
   apiKeyOpenrouter: document.getElementById("api-key-openrouter"),
   apiKeyVenice: document.getElementById("api-key-venice"),
   apiKeyKiloCode: document.getElementById("api-key-kilo-code"),
+  apiKeyOpencodeGo: document.getElementById("api-key-opencode-go"),
   settingsSaveBtn: document.getElementById("settings-save-btn"),
   settingsActiveSummary: document.getElementById("settings-active-summary"),
 
@@ -568,6 +590,7 @@ const el = {
   tabCharacter: document.getElementById("tab-character"),
   tabWorld: document.getElementById("tab-world"),
   tabReader: document.getElementById("tab-reader"),
+  tabChat: document.getElementById("tab-chat"),
   tabAskBook: document.getElementById("tab-ask-book"),
   tabAskCharacter: document.getElementById("tab-ask-character"),
   askBookQuestionInput: document.getElementById("ask-book-question-input"),
@@ -637,6 +660,7 @@ function createDefaultSettings() {
       openrouter: "",
       venice: "",
       "kilo-code": "",
+      "opencode-go": "",
     },
   };
 }
@@ -1073,6 +1097,7 @@ function renderSettingsForm() {
   if (el.apiKeyOpenrouter) el.apiKeyOpenrouter.value = state.settings.apiKeys.openrouter || "";
   if (el.apiKeyVenice) el.apiKeyVenice.value = state.settings.apiKeys.venice || "";
   if (el.apiKeyKiloCode) el.apiKeyKiloCode.value = state.settings.apiKeys["kilo-code"] || "";
+  if (el.apiKeyOpencodeGo) el.apiKeyOpencodeGo.value = state.settings.apiKeys["opencode-go"] || "";
 
   renderSettingsSummary();
 }
@@ -1094,6 +1119,7 @@ function syncSettingsFromForm() {
   state.settings.apiKeys.openrouter = (el.apiKeyOpenrouter?.value || state.settings.apiKeys.openrouter || "").trim();
   state.settings.apiKeys.venice = (el.apiKeyVenice?.value || state.settings.apiKeys.venice || "").trim();
   state.settings.apiKeys["kilo-code"] = (el.apiKeyKiloCode?.value || state.settings.apiKeys["kilo-code"] || "").trim();
+  state.settings.apiKeys["opencode-go"] = (el.apiKeyOpencodeGo?.value || state.settings.apiKeys["opencode-go"] || "").trim();
 
   ensureModelForProvider(nextProvider);
 
@@ -1107,7 +1133,7 @@ function switchView(view) {
   el.viewDetail.classList.toggle("active", view === "detail");
   el.viewSettings.classList.toggle("active", view === "settings");
 
-  el.navLibrary?.classList.toggle("active", view !== "settings");
+  el.navLibrary?.classList.toggle("active", view === "library" || view === "detail");
   el.navDetail?.classList.toggle("active", view === "detail");
   el.navSettings?.classList.toggle("active", view === "settings");
 }
@@ -1886,6 +1912,7 @@ function renderDetail(detail) {
   el.tabWorld.innerHTML = `<div class="markdown-view">${markdownToHtml(detail.setting_markdown || t("world_missing"))}</div>`;
   renderAskCharacterOptions(detail);
   renderReaderPanel(state.readerCache[detail.slug] || null, detail.book_title);
+  void loadChatScript(detail.slug, detail.book_title);
   if (el.askBookAnswer) el.askBookAnswer.textContent = t("ask_empty");
   if (el.askCharacterAnswer) el.askCharacterAnswer.textContent = t("ask_empty");
 
@@ -1901,8 +1928,141 @@ function setTab(tabName) {
   el.tabCharacter?.classList.toggle("active", tabName === "character");
   el.tabWorld?.classList.toggle("active", tabName === "world");
   el.tabReader?.classList.toggle("active", tabName === "reader");
+  el.tabChat?.classList.toggle("active", tabName === "chat");
   el.tabAskBook?.classList.toggle("active", tabName === "ask-book");
   el.tabAskCharacter?.classList.toggle("active", tabName === "ask-character");
+}
+
+const CHAT_NARRATOR_ALIASES = new Set(["narrator", "내레이터", "나레이터", "해설자"]);
+
+function isNarratorSpeaker(speaker) {
+  const normalized = (speaker || "").trim().toLowerCase();
+  return !normalized || CHAT_NARRATOR_ALIASES.has(normalized);
+}
+
+function chatBubbleSide(speakerSides, speaker) {
+  if (!speakerSides.has(speaker)) {
+    const sides = Array.from(speakerSides.values());
+    const rightCount = sides.filter((side) => side === "right").length;
+    const leftCount = sides.length - rightCount;
+    speakerSides.set(speaker, rightCount <= leftCount ? "right" : "left");
+  }
+  return speakerSides.get(speaker);
+}
+
+function renderChatEmptyState(message) {
+  el.tabChat.innerHTML = `
+    <div class="chat-card">
+      <p class="chat-empty">${escapeHtml(message)}</p>
+      <button type="button" class="btn btn-primary" data-chat-generate>${escapeHtml(t("chat_generate_btn"))}</button>
+    </div>
+  `;
+  el.tabChat.querySelector("[data-chat-generate]")?.addEventListener("click", () => void generateChatScript());
+}
+
+function renderChatPanel(script, fallbackTitle = "") {
+  if (!script) {
+    el.tabChat.innerHTML = `<div class="chat-card"><p class="chat-empty">${escapeHtml(t("chat_loading"))}</p></div>`;
+    return;
+  }
+
+  const chapters = Array.isArray(script.chapters) ? script.chapters : [];
+  if (script.error || !chapters.length) {
+    renderChatEmptyState(script.error || t("chat_empty"));
+    return;
+  }
+
+  const speakerSides = new Map();
+  const chaptersHtml = chapters
+    .map((chapter) => {
+      const linesHtml = (chapter.lines || [])
+        .map((line) => {
+          const speaker = (line.speaker || "narrator").trim() || "narrator";
+          const text = escapeHtml(line.text || "");
+          if (isNarratorSpeaker(speaker)) {
+            return `<p class="chat-narration">${text}</p>`;
+          }
+          const side = chatBubbleSide(speakerSides, speaker);
+          return `
+            <div class="chat-row chat-row-${side}">
+              <span class="chat-speaker">${escapeHtml(speaker)}</span>
+              <div class="chat-bubble chat-bubble-${side}">${text}</div>
+            </div>
+          `;
+        })
+        .join("");
+      return `
+        <section class="chat-chapter">
+          <h3 class="chat-chapter-title">${escapeHtml(t("reader_chapter_prefix"))} ${chapter.chapter_index}: ${escapeHtml(
+            chapter.chapter_title || "",
+          )}</h3>
+          ${linesHtml}
+        </section>
+      `;
+    })
+    .join("");
+
+  el.tabChat.innerHTML = `
+    <div class="chat-card">
+      <header class="chat-toolbar">
+        <button type="button" class="btn btn-ghost" data-chat-generate>${escapeHtml(t("chat_regenerate_btn"))}</button>
+      </header>
+      <div class="chat-scroll">${chaptersHtml}</div>
+    </div>
+  `;
+  el.tabChat.querySelector("[data-chat-generate]")?.addEventListener("click", () => void generateChatScript());
+}
+
+async function loadChatScript(slug, fallbackTitle = "", { force = false } = {}) {
+  if (!slug || !el.tabChat) return;
+  if (!force && state.chatCache && state.chatCache.slug === slug) {
+    renderChatPanel(state.chatCache.data, fallbackTitle);
+    return;
+  }
+
+  renderChatPanel(null, fallbackTitle);
+  try {
+    const payload = await fetchJson(`/books/${encodeURIComponent(slug)}/chat-script`);
+    if (!state.currentBook || state.currentBook.slug !== slug) return;
+    state.chatCache = { slug, data: payload };
+    renderChatPanel(payload, fallbackTitle);
+  } catch (error) {
+    if (!state.currentBook || state.currentBook.slug !== slug) return;
+    state.chatCache = { slug, data: { error: t("chat_empty"), chapters: [] } };
+    renderChatPanel(state.chatCache.data, fallbackTitle);
+  }
+}
+
+async function generateChatScript() {
+  const detail = state.currentBook;
+  if (!detail || !detail.slug) {
+    showToast(t("select_book_first"), true);
+    return;
+  }
+
+  const button = el.tabChat.querySelector("[data-chat-generate]");
+  if (button) button.disabled = true;
+  showToast(t("chat_generating"));
+
+  try {
+    const config = getRunConfig();
+    const payload = await fetchJson(`/books/${encodeURIComponent(detail.slug)}/chat-script`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: config.provider,
+        model: config.model,
+        api_key: config.apiKey,
+        language: config.language,
+      }),
+    });
+    state.chatCache = { slug: detail.slug, data: payload };
+    renderChatPanel(payload, detail.book_title);
+    showToast(t("chat_generate_done"));
+  } catch (error) {
+    showToast(error.message || t("chat_generate_failed"), true);
+    if (button) button.disabled = false;
+  }
 }
 
 async function openBook(slug, { switchToDetail = false } = {}) {
@@ -2365,6 +2525,7 @@ function bindSettingsEvents() {
     { element: el.apiKeyOpenrouter, provider: "openrouter" },
     { element: el.apiKeyVenice, provider: "venice" },
     { element: el.apiKeyKiloCode, provider: "kilo-code" },
+    { element: el.apiKeyOpencodeGo, provider: "opencode-go" },
   ].forEach(({ element, provider }) => {
     if (!element) return;
     element.addEventListener("change", () => {

@@ -201,3 +201,68 @@ def build_book_qa_prompt(
 
 {response_block}
 """.strip()
+
+
+def build_studio_system_prompt(
+    *,
+    book_title: str,
+    premise: str,
+    genre: str,
+    language: str,
+    finalized_chapters: list[dict],
+) -> str:
+    if finalized_chapters:
+        chapters_block = "\n".join(
+            f"{chapter['chapter_index']}장 '{chapter['chapter_title']}': {chapter['summary']}"
+            for chapter in finalized_chapters
+        )
+    else:
+        chapters_block = "아직 확정된 챕터가 없다."
+
+    return f"""
+너는 사용자와 함께 새 소설을 집필하는 공동 작가다.
+제목: {book_title}
+장르: {genre or '미정'}
+줄거리/기획 의도: {premise or '미정'}
+모든 답변은 {language}로 작성하라.
+
+사용자와 대화하며 다음 화의 스토리를 제안하고, 요청받으면 실제 본문을 초안으로 작성하라.
+이미 확정된 챕터와 설정이 어긋나지 않도록 일관성을 유지하라.
+
+[이미 확정된 챕터]
+{chapters_block}
+""".strip()
+
+
+def build_studio_bible_prompt(
+    *,
+    title: str,
+    premise: str,
+    genre: str,
+    language: str,
+    existing_setting: str,
+    existing_characters: list[dict],
+) -> str:
+    if existing_characters:
+        characters_block = "\n".join(
+            f"- {character['name']}: {character['markdown']}" for character in existing_characters
+        )
+    else:
+        characters_block = "아직 없음"
+
+    return f"""
+너는 사용자와 함께 소설의 세계관/캐릭터 설정집을 만드는 공동 기획자다.
+제목: {title}
+장르: {genre or '미정'}
+기획 의도: {premise or '미정'}
+모든 답변은 {language}로 작성하라.
+
+사용자와 대화하며 세계관 설정과 캐릭터 프로필을 구체화하라. 캐릭터를 제안할 때는
+'## 캐릭터이름' 제목으로 구분해 정리하라.
+
+[기존 세계관 설정]
+{existing_setting or '아직 없음'}
+
+[기존 캐릭터]
+{characters_block}
+""".strip()

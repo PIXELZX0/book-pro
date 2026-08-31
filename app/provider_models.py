@@ -126,6 +126,14 @@ def _fetch_kilo_models(_api_key: str) -> list[str]:
     return _extract_model_ids(payload)
 
 
+def _fetch_opencode_go_models(api_key: str) -> list[str]:
+    headers: dict[str, str] = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    payload = _request_json("https://opencode.ai/zen/go/v1/models", headers=headers)
+    return _extract_model_ids(payload)
+
+
 def fetch_provider_models(provider: str, *, api_key: str = "") -> list[str]:
     normalized = normalize_provider(provider)
     key = (api_key or "").strip()
@@ -141,6 +149,8 @@ def fetch_provider_models(provider: str, *, api_key: str = "") -> list[str]:
             models = _fetch_venice_models(key)
         elif normalized == "kilo-code":
             models = _fetch_kilo_models(key)
+        elif normalized == "opencode-go":
+            models = _fetch_opencode_go_models(key)
         else:
             raise ValueError(f"지원하지 않는 provider 입니다: {provider}")
     except urllib.error.HTTPError as exc:
