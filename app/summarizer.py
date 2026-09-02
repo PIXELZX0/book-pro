@@ -43,6 +43,11 @@ _PROVIDER_ALIASES = {
     "opencode_go": "opencode-go",
     "opencode go": "opencode-go",
     "opencodego": "opencode-go",
+    "opencode-zen": "opencode-zen",
+    "opencode_zen": "opencode-zen",
+    "opencode zen": "opencode-zen",
+    "opencodezen": "opencode-zen",
+    "zen": "opencode-zen",
 }
 
 _PROVIDER_BASE_URL = {
@@ -52,6 +57,7 @@ _PROVIDER_BASE_URL = {
     "venice": "https://api.venice.ai/api/v1",
     "kilo-code": "https://api.kilo.ai/api/gateway",
     "opencode-go": "https://opencode.ai/zen/go/v1",
+    "opencode-zen": "https://opencode.ai/zen/v1",
 }
 
 _PROVIDER_DEFAULT_MODEL = {
@@ -61,6 +67,7 @@ _PROVIDER_DEFAULT_MODEL = {
     "venice": "venice-uncensored",
     "kilo-code": "anthropic/claude-sonnet-4.5",
     "opencode-go": "claude-sonnet-4-5",
+    "opencode-zen": "grok-4.6",
 }
 
 logger = logging.getLogger("uvicorn.error")

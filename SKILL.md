@@ -25,6 +25,8 @@
 - `openrouter`
 - `venice`
 - `kilo-code`
+- `opencode-go`
+- `opencode-zen`
 
 Provider, model, and API key can be passed per request via multipart form fields, or read from server defaults in `.env`.
 

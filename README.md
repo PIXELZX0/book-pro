@@ -41,7 +41,7 @@ Set `OPENAI_API_KEY` in `.env`.
 Main environment variables:
 
 - `OPENAI_API_KEY`: default API key used when request-level key is omitted
-- `BOOK_PRO_PROVIDER`: default provider (`openai`, `anthropic`, `openrouter`, `venice`, `kilo-code`, `opencode-go`)
+- `BOOK_PRO_PROVIDER`: default provider (`openai`, `anthropic`, `openrouter`, `venice`, `kilo-code`, `opencode-go`, `opencode-zen`)
 - `BOOK_PRO_MODEL`: default model
 - `BOOK_PRO_MAX_CHAPTERS`: optional chapter limit per request (`0`/unset = unlimited)
 - `BOOK_PRO_CHAPTER_PARALLEL`: per-book chapter workers (`1` to `8`, default `3`)

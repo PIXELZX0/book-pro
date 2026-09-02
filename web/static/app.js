@@ -1,4 +1,12 @@
-const PROVIDERS = ["open-ai", "anthropic", "openrouter", "venice", "kilo-code", "opencode-go"];
+const PROVIDERS = [
+  "open-ai",
+  "anthropic",
+  "openrouter",
+  "venice",
+  "kilo-code",
+  "opencode-go",
+  "opencode-zen",
+];
 
 const PROVIDER_LABEL = {
   "open-ai": "OPEN-AI",
@@ -7,6 +15,7 @@ const PROVIDER_LABEL = {
   venice: "Venice",
   "kilo-code": "Kilo Code",
   "opencode-go": "OpenCode Go",
+  "opencode-zen": "OpenCode Zen",
 };
 
 const DEFAULT_MODEL_BY_PROVIDER = {
@@ -16,6 +25,7 @@ const DEFAULT_MODEL_BY_PROVIDER = {
   venice: "venice-uncensored",
   "kilo-code": "anthropic/claude-sonnet-4.5",
   "opencode-go": "claude-sonnet-4-5",
+  "opencode-zen": "grok-4.6",
 };
 
 const MODEL_OPTIONS_BY_PROVIDER = {
@@ -25,6 +35,16 @@ const MODEL_OPTIONS_BY_PROVIDER = {
   venice: ["venice-uncensored", "llama-3.3-70b", "qwen2.5-72b-instruct"],
   "kilo-code": ["anthropic/claude-sonnet-4.5", "openai/gpt-4.1-mini", "google/gemini-2.5-pro"],
   "opencode-go": ["claude-sonnet-4-5", "gpt-5", "grok-4"],
+  "opencode-zen": [
+    "grok-4.6",
+    "grok-4.5",
+    "claude-sonnet-4-5",
+    "gpt-5.4-mini",
+    "gemini-3-flash",
+    "deepseek-v4-flash",
+    "glm-5.2",
+    "kimi-k3",
+  ],
 };
 
 const CUSTOM_MODEL_VALUE = "__custom__";
@@ -534,6 +554,7 @@ const state = {
       venice: "",
       "kilo-code": "",
       "opencode-go": "",
+      "opencode-zen": "",
     },
   },
 };
@@ -562,6 +583,7 @@ const el = {
   apiKeyVenice: document.getElementById("api-key-venice"),
   apiKeyKiloCode: document.getElementById("api-key-kilo-code"),
   apiKeyOpencodeGo: document.getElementById("api-key-opencode-go"),
+  apiKeyOpencodeZen: document.getElementById("api-key-opencode-zen"),
   settingsSaveBtn: document.getElementById("settings-save-btn"),
   settingsActiveSummary: document.getElementById("settings-active-summary"),
 
@@ -661,6 +683,7 @@ function createDefaultSettings() {
       venice: "",
       "kilo-code": "",
       "opencode-go": "",
+      "opencode-zen": "",
     },
   };
 }
@@ -1098,6 +1121,7 @@ function renderSettingsForm() {
   if (el.apiKeyVenice) el.apiKeyVenice.value = state.settings.apiKeys.venice || "";
   if (el.apiKeyKiloCode) el.apiKeyKiloCode.value = state.settings.apiKeys["kilo-code"] || "";
   if (el.apiKeyOpencodeGo) el.apiKeyOpencodeGo.value = state.settings.apiKeys["opencode-go"] || "";
+  if (el.apiKeyOpencodeZen) el.apiKeyOpencodeZen.value = state.settings.apiKeys["opencode-zen"] || "";
 
   renderSettingsSummary();
 }
@@ -1120,6 +1144,7 @@ function syncSettingsFromForm() {
   state.settings.apiKeys.venice = (el.apiKeyVenice?.value || state.settings.apiKeys.venice || "").trim();
   state.settings.apiKeys["kilo-code"] = (el.apiKeyKiloCode?.value || state.settings.apiKeys["kilo-code"] || "").trim();
   state.settings.apiKeys["opencode-go"] = (el.apiKeyOpencodeGo?.value || state.settings.apiKeys["opencode-go"] || "").trim();
+  state.settings.apiKeys["opencode-zen"] = (el.apiKeyOpencodeZen?.value || state.settings.apiKeys["opencode-zen"] || "").trim();
 
   ensureModelForProvider(nextProvider);
 
@@ -2526,6 +2551,7 @@ function bindSettingsEvents() {
     { element: el.apiKeyVenice, provider: "venice" },
     { element: el.apiKeyKiloCode, provider: "kilo-code" },
     { element: el.apiKeyOpencodeGo, provider: "opencode-go" },
+    { element: el.apiKeyOpencodeZen, provider: "opencode-zen" },
   ].forEach(({ element, provider }) => {
     if (!element) return;
     element.addEventListener("change", () => {

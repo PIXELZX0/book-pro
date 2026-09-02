@@ -5,6 +5,7 @@ const DEFAULT_MODEL_BY_PROVIDER = {
   venice: "venice-uncensored",
   "kilo-code": "anthropic/claude-sonnet-4.5",
   "opencode-go": "claude-sonnet-4-5",
+  "opencode-zen": "grok-4.6",
 };
 
 const STORAGE_KEY = "book-pro-panel-settings";
@@ -21,6 +22,7 @@ const state = {
       venice: "",
       "kilo-code": "",
       "opencode-go": "",
+      "opencode-zen": "",
     },
   },
   studioProjects: [],
@@ -131,6 +133,7 @@ function loadSettings() {
         venice: "",
         "kilo-code": "",
         "opencode-go": "",
+        "opencode-zen": "",
       },
     };
   }

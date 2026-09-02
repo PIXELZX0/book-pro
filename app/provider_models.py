@@ -7,10 +7,15 @@ from typing import Any
 from app.summarizer import normalize_provider
 
 _HTTP_TIMEOUT_SEC = 20
+# 일부 provider(opencode.ai)는 Cloudflare가 기본 Python-urllib User-Agent를 차단(HTTP 403)합니다.
+_USER_AGENT = "book-pro/1.0"
 
 
 def _request_json(url: str, *, headers: dict[str, str] | None = None) -> dict[str, Any]:
-    request = urllib.request.Request(url, headers=headers or {})
+    request_headers = {"User-Agent": _USER_AGENT, "Accept": "application/json"}
+    request_headers.update(headers or {})
+
+    request = urllib.request.Request(url, headers=request_headers)
     with urllib.request.urlopen(request, timeout=_HTTP_TIMEOUT_SEC) as response:
         body = response.read().decode("utf-8", errors="replace")
 
@@ -134,6 +139,14 @@ def _fetch_opencode_go_models(api_key: str) -> list[str]:
     return _extract_model_ids(payload)
 
 
+def _fetch_opencode_zen_models(api_key: str) -> list[str]:
+    headers: dict[str, str] = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    payload = _request_json("https://opencode.ai/zen/v1/models", headers=headers)
+    return _extract_model_ids(payload)
+
+
 def fetch_provider_models(provider: str, *, api_key: str = "") -> list[str]:
     normalized = normalize_provider(provider)
     key = (api_key or "").strip()
@@ -151,6 +164,8 @@ def fetch_provider_models(provider: str, *, api_key: str = "") -> list[str]:
             models = _fetch_kilo_models(key)
         elif normalized == "opencode-go":
             models = _fetch_opencode_go_models(key)
+        elif normalized == "opencode-zen":
+            models = _fetch_opencode_zen_models(key)
         else:
             raise ValueError(f"지원하지 않는 provider 입니다: {provider}")
     except urllib.error.HTTPError as exc:
