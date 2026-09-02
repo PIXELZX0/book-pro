@@ -2,17 +2,23 @@ name: CI-CD
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, master]
   push:
-    branches: [main]
+    branches: [main, master]
     tags:
       - "v*"
   release:
     types: [published]
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   PYTHON_VERSION: "3.12"
+  REGISTRY: ghcr.io
+  PLATFORMS: linux/amd64,linux/arm64
 
 jobs:
   test:
@@ -53,10 +59,16 @@ jobs:
           push: false
           tags: book-pro:ci
 
-  release:
-    name: Release
+  publish:
+    name: Publish GHCR image
     needs: [test, build]
-    if: github.event_name == 'release' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+    if: >
+      github.event_name == 'release' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' &&
+       (github.ref == 'refs/heads/main' ||
+        github.ref == 'refs/heads/master' ||
+        startsWith(github.ref, 'refs/tags/v')))
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -65,17 +77,39 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set release metadata
+      - name: Resolve image metadata
         id: prep
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            VERSION_TAG="${{ github.event.release.tag_name }}"
-          else
-            VERSION_TAG="${GITHUB_REF_NAME}"
+          set -euo pipefail
+
+          image="${REGISTRY}/$(echo "${REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+
+          is_release=false
+          if [ "${EVENT_NAME}" = "release" ] || { [ "${EVENT_NAME}" = "push" ] && [[ "${REF}" == refs/tags/v* ]]; }; then
+            is_release=true
           fi
-          echo "version_tag=${VERSION_TAG}" >> "$GITHUB_OUTPUT"
-          echo "owner_lc=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
-          echo "repo_name=${GITHUB_REPOSITORY#*/}" >> "$GITHUB_OUTPUT"
+
+          if [ "${is_release}" = true ]; then
+            version="${RELEASE_TAG:-${REF_NAME}}"
+            echo "channel=rc" >> "$GITHUB_OUTPUT"
+            echo "version=${version}" >> "$GITHUB_OUTPUT"
+            echo "tags=${image}:rc-latest,${image}:rc-${version}" >> "$GITHUB_OUTPUT"
+          else
+            version="test-${SHA:0:7}"
+            echo "channel=test" >> "$GITHUB_OUTPUT"
+            echo "version=${version}" >> "$GITHUB_OUTPUT"
+            echo "tags=${image}:test-latest,${image}:test-${SHA:0:7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -83,24 +117,43 @@ jobs:
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push release image
+      - name: Build and push image
+        id: push
         uses: docker/build-push-action@v6
         with:
           context: .
+          platforms: ${{ env.PLATFORMS }}
           push: true
-          tags: |
-            ghcr.io/${{ steps.prep.outputs.owner_lc }}/${{ steps.prep.outputs.repo_name }}:${{ steps.prep.outputs.version_tag }}
-            ghcr.io/${{ steps.prep.outputs.owner_lc }}/${{ steps.prep.outputs.repo_name }}:latest
+          provenance: false
+          tags: ${{ steps.prep.outputs.tags }}
+          cache-from: type=gha,scope=book-pro
+          cache-to: type=gha,mode=max,scope=book-pro
+
+      - name: Publish image summary
+        env:
+          TAGS: ${{ steps.prep.outputs.tags }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          {
+            echo "### Published GHCR image (\`${{ steps.prep.outputs.channel }}\`)"
+            echo
+            echo "- digest: \`${DIGEST}\`"
+            echo "- platforms: \`${{ env.PLATFORMS }}\`"
+            echo "- tags:"
+            for tag in ${TAGS//,/ }; do
+              echo "  - \`${tag}\`"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Create GitHub release
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           body: |
             Docker image published:
-            - ghcr.io/${{ steps.prep.outputs.owner_lc }}/${{ steps.prep.outputs.repo_name }}:${{ steps.prep.outputs.version_tag }}
+            - ghcr.io/$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]'):rc-${{ steps.prep.outputs.version }}

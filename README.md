@@ -400,4 +400,13 @@ Workflow file: `.github/workflows/ci-cd.yml`
 Pipeline stages:
 1. `Test`: run `pytest`
 2. `Build`: validate Docker image build
-3. `Release`: on `v*` tag/release, publish GHCR image and create GitHub Release
+3. `Publish GHCR image`: build `linux/amd64,linux/arm64` and push to `ghcr.io/<owner>/<repo>`
+   - push to `main`/`master` or manual dispatch: `test-latest`, `test-<short-sha>`
+   - `v*` tag push or published release: `rc-latest`, `rc-<version>` (+ GitHub Release on tag push)
+
+Pull an image:
+
+```bash
+docker pull ghcr.io/pixelzx0/book-pro:test-latest
+docker pull ghcr.io/pixelzx0/book-pro:rc-latest
+```
