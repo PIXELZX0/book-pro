@@ -10,6 +10,12 @@ services:
       BOOK_PRO_MODEL: ${BOOK_PRO_MODEL:-gpt-4.1-mini}
       BOOK_PRO_MAX_CHAPTERS: ${BOOK_PRO_MAX_CHAPTERS:-0}
       BOOK_PRO_OUTPUT_DIR: /app/books
+      BOOK_PRO_MCP_ENABLED: ${BOOK_PRO_MCP_ENABLED:-true}
+      BOOK_PRO_MCP_PATH: ${BOOK_PRO_MCP_PATH:-/mcp}
+      BOOK_PRO_MCP_TOKEN: ${BOOK_PRO_MCP_TOKEN:-}
+      BOOK_PRO_MCP_IMPORT_DIR: ${BOOK_PRO_MCP_IMPORT_DIR:-/app/imports}
     volumes:
       - ./books:/app/books
+      # Mount the MCP EPUB import directory (matches BOOK_PRO_MCP_IMPORT_DIR)
+      # - ./imports:/app/imports
     restart: unless-stopped

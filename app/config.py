@@ -17,6 +17,10 @@ class Settings(BaseSettings):
         alias="BOOK_PRO_QWEN_TTS_BASE_URL",
     )
     qwen_tts_model: str = Field(default="qwen3-tts-vc-2026-01-22", alias="BOOK_PRO_QWEN_TTS_MODEL")
+    mcp_enabled: bool = Field(default=True, alias="BOOK_PRO_MCP_ENABLED")
+    mcp_path: str = Field(default="/mcp", alias="BOOK_PRO_MCP_PATH")
+    mcp_token: str = Field(default="", alias="BOOK_PRO_MCP_TOKEN")
+    mcp_import_dir: str = Field(default="", alias="BOOK_PRO_MCP_IMPORT_DIR")
 
     model_config = SettingsConfigDict(
         env_file=".env",

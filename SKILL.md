@@ -2,9 +2,15 @@
 
 `book-pro` is an API server for uploading EPUB files, generating structured AI summaries, and reading the original text.
 
-## Base URL
+It also exposes an MCP server so AI agents can read books and write books in the Studio.
 
-- Local default: `http://127.0.0.1:8000`
+## Interfaces
+
+- REST API base URL (local default): `http://127.0.0.1:8000`
+- MCP streamable HTTP endpoint: `http://127.0.0.1:8000/mcp`
+- MCP stdio entry point: `python -m app.mcp_server` (same tools, for local agents)
+
+If you are an MCP client, prefer the MCP tools listed at the bottom of this document.
 
 ## Core Capabilities
 
@@ -83,3 +89,38 @@ Provider, model, and API key can be passed per request via multipart form fields
 3. Poll `GET /uploads/{upload_id}/progress` until completion
 4. Call `GET /books` and `GET /books/{slug}` for saved summary outputs
 5. Call `GET /books/{slug}/reader` when original chapter text is needed
+
+## MCP Tools
+
+Reading:
+- `list_books`, `get_book_overview`, `list_chapters`, `read_chapter_summary`
+- `read_original_chapter`, `list_characters`, `read_character`, `read_world_setting`
+- `search_book`, `ask_book`, `get_reading_progress`, `update_reading_progress`
+- `list_provider_models`
+
+Ingest and summarization (asynchronous):
+- `import_epub`
+- `summarize_epub_start`, `summarize_book_start`
+- `get_upload_progress_state`, `list_active_uploads`
+
+Studio (writing books):
+- `create_studio_project`, `create_studio_series`, `add_series_volume`
+- `list_studio_projects`, `list_studio_series`, `get_studio_project`, `get_studio_series`
+- `studio_chat`, `finalize_chapter`
+- `get_bible`, `save_bible`, `bible_chat`
+
+MCP resources: `book://{slug}/overview`, `book://{slug}/chapter/{index}`, `book://{slug}/original/{index}`, `book://{slug}/setting`
+MCP prompts: `read_book_guide`, `write_next_chapter`
+
+### Minimal MCP Flow
+
+1. Call `list_books` (or `import_epub` + `summarize_book_start` for a new EPUB) to get a `slug`
+2. Call `get_book_overview`, then `read_chapter_summary` / `read_original_chapter` to read
+3. Call `ask_book` for questions that need whole-book reasoning
+4. To write: `create_studio_project` (or `create_studio_series` + `add_series_volume`) → `studio_chat` → `finalize_chapter`
+5. Manage world settings and characters with `get_bible` / `bible_chat` / `save_bible`
+
+Notes:
+- Summarization is asynchronous: start it, then poll `get_upload_progress_state` until `completed` or `failed`
+- EPUB import by file path requires `BOOK_PRO_MCP_IMPORT_DIR`; otherwise send base64 content
+- Resource URIs require URI-safe slugs, so prefer the tools for books with Korean or spaced titles

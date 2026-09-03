@@ -14,6 +14,7 @@ It also provides:
 - Server-side reading progress persistence for cross-browser/device resume
 - Audiobook generation (chapter scripts + Qwen3 Voice Design + Base Voice Clone + TTS synthesis)
 - Chat-style novel conversion (messenger-style speaker/text script, rendered as chat bubbles in the web panel)
+- An MCP server (`/mcp`, plus stdio mode) so AI agents can read books and write books in the Studio
 
 ## Key Features
 
@@ -23,6 +24,7 @@ It also provides:
 - Multi-book batch processing (`max_parallel`)
 - Reader progress API with server persistence (`.reader-progress.json`)
 - Q&A over summarized book content (`/ask`, `/ask/stream`)
+- MCP tools for library reading, Studio co-writing, and asynchronous EPUB summarization
 - Docker and GitHub Actions CI/CD support
 
 ## 1) Installation
@@ -49,6 +51,10 @@ Main environment variables:
 - `BOOK_PRO_QWEN_TTS_API_KEY`: default Qwen3 TTS key
 - `BOOK_PRO_QWEN_TTS_BASE_URL`: default Qwen3 TTS base URL
 - `BOOK_PRO_QWEN_TTS_MODEL`: default Qwen3 TTS model
+- `BOOK_PRO_MCP_ENABLED`: enable the MCP server (`true`/`false`, default `true`)
+- `BOOK_PRO_MCP_PATH`: MCP HTTP mount path (default `/mcp`)
+- `BOOK_PRO_MCP_TOKEN`: when set, the MCP HTTP endpoint requires `Authorization: Bearer <token>`
+- `BOOK_PRO_MCP_IMPORT_DIR`: when set, MCP agents may import EPUBs by path inside this directory
 
 Note: provider aliases like `open-ai` are normalized internally.
 
@@ -87,6 +93,7 @@ docker compose up --build -d
 - Swagger UI: <http://127.0.0.1:8000/docs>
 - Web Panel (Library/Reader): <http://127.0.0.1:8000/panel>
 - Studio (AI co-writing): <http://127.0.0.1:8000/studio>
+- MCP endpoint (AI agents): <http://127.0.0.1:8000/mcp>
 - Agent Skill Doc: <http://127.0.0.1:8000/skill.md>
 
 ## 5) API Usage
@@ -258,7 +265,103 @@ curl -X GET "http://127.0.0.1:8000/books/book-your-book-slug/chat-script"
 
 Output stored at `books/book-<title>/chat/script.json`. In the web panel, open a book and use the **Chat** tab to generate/view it as a chat-bubble reading mode.
 
-## 6) Local vLLM-Omni for Qwen3 TTS
+## 6) MCP Server (AI Agents)
+
+`book-pro` ships an MCP server so AI agents can read books from the library and write books in the Studio.
+
+Two transports share the same tools:
+
+- Streamable HTTP: `http://127.0.0.1:8000/mcp` (mounted inside the FastAPI app, stateless so no session handshake is required)
+- stdio: `python -m app.mcp_server` (for local agents that spawn the process themselves)
+
+### Tools
+
+Reading:
+
+| Tool | Description |
+| --- | --- |
+| `list_books` | List the library (optionally only Studio books) |
+| `get_book_overview` | Chapter/character previews + world settings |
+| `list_chapters`, `read_chapter_summary` | Chapter summaries (markdown) |
+| `read_original_chapter` | Original EPUB text with `offset`/`max_chars` paging |
+| `list_characters`, `read_character` | Character profiles |
+| `read_world_setting` | World/setting markdown |
+| `search_book` | Snippet search over summaries and/or original text |
+| `ask_book` | AI Q&A grounded in the book summaries (`book` or `character` mode) |
+| `get_reading_progress`, `update_reading_progress` | Remember/resume a reading position |
+| `list_provider_models` | Discover models for a provider |
+
+Ingest and summarization (asynchronous):
+
+| Tool | Description |
+| --- | --- |
+| `import_epub` | Store an EPUB in the library without summarizing it |
+| `summarize_epub_start` | Start a background summarization job from base64 or an allowed path |
+| `summarize_book_start` | Start summarizing an EPUB already stored in the library |
+| `get_upload_progress_state`, `list_active_uploads` | Poll job progress |
+
+Studio (writing books):
+
+| Tool | Description |
+| --- | --- |
+| `create_studio_project`, `create_studio_series` | Create a single book or a multi-volume series |
+| `add_series_volume` | Add a volume (inherits series premise/genre/bible) |
+| `list_studio_projects`, `list_studio_series`, `get_studio_project`, `get_studio_series` | Browse projects/series |
+| `studio_chat` | Co-write with the Studio assistant (conversation is persisted) |
+| `finalize_chapter` | Save a chapter as a finalized markdown file |
+| `get_bible`, `save_bible`, `bible_chat` | Manage world settings and character sheets |
+
+MCP resources (`book://{slug}/overview`, `book://{slug}/chapter/{index}`, `book://{slug}/original/{index}`, `book://{slug}/setting`) and prompts (`read_book_guide`, `write_next_chapter`) are also exposed. Resource URIs must be URI-safe, so books whose slug contains spaces or non-ASCII characters (common for Korean titles) are best read through the tools.
+
+### Client configuration
+
+opencode (`~/.config/opencode/opencode.json`):
+
+```json
+{
+  "mcp": {
+    "book-pro": {
+      "type": "remote",
+      "url": "http://127.0.0.1:8000/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_MCP_TOKEN"
+      }
+    }
+  }
+}
+```
+
+Claude Code CLI:
+
+```bash
+claude mcp add --transport http book-pro http://127.0.0.1:8000/mcp \
+  --header "Authorization: Bearer YOUR_MCP_TOKEN"
+```
+
+Omit the `Authorization` header/`headers` block when `BOOK_PRO_MCP_TOKEN` is not set.
+
+Claude Desktop (stdio mode):
+
+```json
+{
+  "mcpServers": {
+    "book-pro": {
+      "command": "/absolute/path/to/book-pro/.venv/bin/python",
+      "args": ["-m", "app.mcp_server"],
+      "cwd": "/absolute/path/to/book-pro"
+    }
+  }
+}
+```
+
+### Security and limits
+
+- Set `BOOK_PRO_MCP_TOKEN` to require a Bearer token on the HTTP endpoint. Without it, the endpoint is open: use it only on a trusted/local network.
+- `BOOK_PRO_MCP_IMPORT_DIR` is the only directory agents may read EPUBs from by path. Leave it empty to allow base64 payloads only.
+- Set `BOOK_PRO_MCP_ENABLED=false` to disable MCP completely.
+- Summarization tools return an `upload_id` immediately; poll `get_upload_progress_state` until `completed`/`failed`. Progress is stored in memory, so it is lost when the server restarts.
+
+## 7) Local vLLM-Omni for Qwen3 TTS
 
 If `tts_base_url` points to localhost/127.0.0.1, missing `tts_api_key` is automatically treated as `none`.
 
@@ -294,7 +397,7 @@ BOOK_PRO_QWEN_TTS_MODEL=Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
 BOOK_PRO_QWEN_TTS_API_KEY=none
 ```
 
-## 7) Response Shape (example)
+## 8) Response Shape (example)
 
 ```json
 {
@@ -354,7 +457,7 @@ BOOK_PRO_QWEN_TTS_API_KEY=none
 }
 ```
 
-## 8) Output Directory Layout
+## 9) Output Directory Layout
 
 After successful processing, files are stored like:
 

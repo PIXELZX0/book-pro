@@ -2,23 +2,22 @@ import logging
 import asyncio
 import json
 import os
-import re
 import tempfile
 from typing import Any
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
 
 from fastapi.concurrency import run_in_threadpool
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.config import get_settings
+from app import service
 from app.audiobook import AudiobookGenerator
+from app.config import get_settings
 from app.epub_parser import parse_epub
+from app.mcp_server import MountPathRewriteMiddleware, build_mcp_app, mcp_mount_path
 from app.progress import (
-    complete_upload_progress,
     fail_upload_progress,
     get_upload_progress,
     init_upload_progress,
@@ -62,30 +61,24 @@ from app.schemas import (
 from app.prompts import build_studio_bible_prompt, build_studio_system_prompt
 from app.provider_models import fetch_provider_models
 from app.storage import (
-    compute_chapter_digest,
     ensure_book_directories,
     extract_section,
     get_latest_epub_path,
     list_books,
     list_series,
     list_series_volumes,
-    load_chapter_digest_index,
-    prune_chapter_files,
     read_bible,
     read_bible_conversation,
     read_book_detail,
     read_book_reader,
     read_book_reader_progress,
-    read_saved_chapter_summaries,
     read_book_summary_snapshot,
     read_series,
     read_studio_conversation,
     read_studio_project,
     save_bible,
     save_bible_conversation,
-    save_book_summary,
     save_book_reader_progress,
-    save_chapter_digest_index,
     save_chapter_summary,
     save_series,
     save_studio_conversation,
@@ -102,14 +95,28 @@ logger = logging.getLogger("uvicorn.error")
 DEFAULT_MULTI_SUMMARY_PARALLEL = 3
 MAX_CHAPTER_SUMMARY_PARALLEL = 8
 
+_build_summarizer = service.build_summarizer
+_normalize_error_message = service.normalize_error_message
+_resolve_chapter_parallel = service.resolve_chapter_parallel
+_is_local_tts_base_url = service.is_local_tts_base_url
+_resolve_tts_api_key = service.resolve_tts_api_key
+_summarize_from_temp_path = service.summarize_from_temp_path
+
+_mcp_app = build_mcp_app()
+
 app = FastAPI(
     title="book-pro",
     description="EPUB 소설/서사의 챕터/캐릭터/세계관 요약 생성 API",
     version="0.3.0",
+    lifespan=_mcp_app.lifespan if _mcp_app is not None else None,
 )
 
 if (WEB_DIR / "static").exists():
     app.mount("/static", StaticFiles(directory=str(WEB_DIR / "static")), name="static")
+
+if _mcp_app is not None:
+    app.add_middleware(MountPathRewriteMiddleware, path=mcp_mount_path())
+    app.mount(mcp_mount_path(), _mcp_app)
 
 
 @app.get("/")
@@ -169,90 +176,6 @@ def get_provider_models(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return ProviderModelsResponse(provider=normalized, models=models)
-
-
-def _build_summarizer(
-    *,
-    provider: str | None,
-    api_key: str | None,
-    model: str | None,
-) -> MultiProviderBookSummarizer:
-    settings = get_settings()
-    provider_value = normalize_provider(provider or settings.default_provider)
-    resolved_api_key = (api_key or "").strip() or settings.openai_api_key
-    resolved_model = (model or "").strip()
-
-    default_provider = normalize_provider(settings.default_provider)
-    if not resolved_model and provider_value == default_provider:
-        resolved_model = settings.default_model
-
-    if not resolved_api_key:
-        raise ValueError(
-            "API key가 비어 있습니다. Web Panel에서 입력하거나 .env의 OPENAI_API_KEY를 설정하세요."
-        )
-
-    return MultiProviderBookSummarizer(
-        provider=provider_value,
-        api_key=resolved_api_key,
-        model=resolved_model or None,
-    )
-
-
-def _normalize_error_message(exc: Exception) -> str:
-    text = str(exc).strip() or exc.__class__.__name__
-    lower = text.lower()
-
-    if "incorrect api key provided" in lower or "invalid_api_key" in lower:
-        return "API key가 유효하지 않습니다. Settings에서 선택한 Provider의 API key를 확인하세요."
-    if "timed out" in lower or "timeout" in lower:
-        return "AI provider 응답 대기 시간이 초과되었습니다. 잠시 후 다시 시도하세요."
-    if "api key가 비어 있습니다" in text:
-        return text
-
-    if len(text) > 420:
-        return f"{text[:420]}..."
-    return text
-
-
-def _normalize_title_for_compare(value: str) -> str:
-    return re.sub(r"\s+", " ", (value or "").strip()).lower()
-
-
-def _resolve_chapter_parallel(requested: int | None, default_value: int) -> int:
-    candidate = requested if requested is not None else default_value
-    if candidate <= 0:
-        candidate = 1
-    return max(1, min(int(candidate), MAX_CHAPTER_SUMMARY_PARALLEL))
-
-
-def _is_local_tts_base_url(base_url: str) -> bool:
-    candidate = (base_url or "").strip()
-    if not candidate:
-        return False
-    try:
-        host = (urlparse(candidate).hostname or "").strip().lower()
-    except ValueError:
-        return False
-    return host in {"localhost", "127.0.0.1", "0.0.0.0", "::1", "host.docker.internal"}
-
-
-def _resolve_tts_api_key(
-    *,
-    payload_tts_api_key: str | None,
-    default_tts_api_key: str,
-    tts_base_url: str,
-) -> str:
-    resolved = (payload_tts_api_key or "").strip() or (default_tts_api_key or "").strip()
-    if resolved:
-        return resolved
-
-    if _is_local_tts_base_url(tts_base_url):
-        return "none"
-
-    raise ValueError(
-        "Qwen3 TTS API key가 필요합니다. tts_api_key 또는 BOOK_PRO_QWEN_TTS_API_KEY를 설정하세요. "
-        "로컬 vLLM-Omni(localhost) 사용 시에는 API key 없이 자동으로 'none' 값을 사용합니다."
-    )
 
 
 async def _summarize_upload(
@@ -329,193 +252,6 @@ async def _summarize_upload(
     finally:
         if temp_path and os.path.exists(temp_path):
             os.remove(temp_path)
-
-
-def _summarize_from_temp_path(
-    temp_path: str,
-    original_filename: str,
-    summarizer: MultiProviderBookSummarizer,
-    chapter_limit: int | None,
-    chapter_parallel: int,
-    language: str,
-    precise_analysis: bool,
-    output_dir: str,
-    upload_id: str | None,
-) -> BookSummary:
-    book = parse_epub(temp_path)
-    logger.info(
-        "[업로드 파싱 완료] file='%s' title='%s' chapters=%d",
-        original_filename,
-        book.title,
-        len(book.chapters),
-    )
-    if upload_id:
-        update_upload_progress(
-            upload_id,
-            status="processing",
-            progress=6,
-            stage="parse",
-            message="EPUB 메타데이터/챕터 파싱 완료",
-            book_title=book.title,
-            chapter_total=len(book.chapters),
-        )
-
-    ensure_book_directories(book.title, root_dir=output_dir)
-    saved_epub = save_uploaded_epub(
-        book.title,
-        source_file_path=temp_path,
-        original_filename=original_filename,
-        root_dir=output_dir,
-    )
-    logger.info(
-        "[원본 EPUB 저장] file='%s' path='%s'",
-        original_filename,
-        saved_epub,
-    )
-    if upload_id:
-        update_upload_progress(
-            upload_id,
-            status="processing",
-            progress=7,
-            stage="saving",
-            message="원본 EPUB 저장 완료",
-            book_title=book.title,
-        )
-
-    original_chapter_count = len(book.chapters)
-    if chapter_limit is not None and chapter_limit > 0:
-        book.chapters = book.chapters[:chapter_limit]
-        if original_chapter_count != len(book.chapters):
-            logger.info(
-                "[챕터 제한 적용] title='%s' %d -> %d",
-                book.title,
-                original_chapter_count,
-                len(book.chapters),
-            )
-    if upload_id:
-        update_upload_progress(
-            upload_id,
-            status="processing",
-            progress=8,
-            stage="chapter",
-            message="요약 준비 완료" if not precise_analysis else "정밀 분석 요약 준비 완료",
-            chapter_total=len(book.chapters),
-            book_title=book.title,
-        )
-
-    previous_digest_map = load_chapter_digest_index(book.title, root_dir=output_dir)
-    previous_summary_map = read_saved_chapter_summaries(book.title, root_dir=output_dir)
-    previous_summary_by_digest: dict[str, ChapterSummary] = {}
-    for index, digest in previous_digest_map.items():
-        chapter_summary = previous_summary_map.get(index)
-        if chapter_summary and digest and digest not in previous_summary_by_digest:
-            previous_summary_by_digest[digest] = chapter_summary
-
-    digest_map: dict[int, str] = {}
-    reusable_summary_map: dict[int, ChapterSummary] = {}
-    refresh_indexes: set[int] = set()
-    for chapter in book.chapters:
-        digest = compute_chapter_digest(chapter_title=chapter.title, chapter_text=chapter.text)
-        digest_map[chapter.index] = digest
-
-        reusable = None
-        if previous_digest_map.get(chapter.index) == digest:
-            reusable = previous_summary_map.get(chapter.index)
-        if reusable is None:
-            reusable = previous_summary_by_digest.get(digest)
-        if reusable is None and chapter.index not in previous_digest_map:
-            existing_by_index = previous_summary_map.get(chapter.index)
-            if (
-                existing_by_index
-                and _normalize_title_for_compare(existing_by_index.chapter_title)
-                == _normalize_title_for_compare(chapter.title)
-            ):
-                reusable = existing_by_index
-
-        if reusable is None:
-            refresh_indexes.add(chapter.index)
-            continue
-
-        if reusable.chapter_index != chapter.index or reusable.chapter_title != chapter.title:
-            reusable = reusable.model_copy(
-                update={
-                    "chapter_index": chapter.index,
-                    "chapter_title": chapter.title,
-                }
-            )
-        reusable_summary_map[chapter.index] = reusable
-
-    logger.info(
-        "[증분 판정] title='%s' total=%d refresh=%d reuse=%d",
-        book.title,
-        len(book.chapters),
-        len(refresh_indexes),
-        len(reusable_summary_map),
-    )
-    digest_index_in_progress = dict(previous_digest_map)
-
-    def on_progress(payload: dict[str, Any]) -> None:
-        if not upload_id:
-            return
-        update_upload_progress(
-            upload_id,
-            book_title=book.title,
-            **payload,
-        )
-
-    def on_chapter_summary(chapter_summary: ChapterSummary) -> None:
-        chapter_digest = digest_map.get(chapter_summary.chapter_index, "")
-        if chapter_digest:
-            digest_index_in_progress[chapter_summary.chapter_index] = chapter_digest
-            save_chapter_digest_index(
-                book.title,
-                digest_index_in_progress,
-                root_dir=output_dir,
-            )
-        chapter_path = save_chapter_summary(
-            book.title,
-            chapter_summary,
-            root_dir=output_dir,
-        )
-        logger.info(
-            "[챕터 파일 즉시 저장] title='%s' chapter=%d path='%s'",
-            book.title,
-            chapter_summary.chapter_index,
-            chapter_path,
-        )
-
-    summary = summarizer.summarize_incremental(
-        book,
-        existing_chapter_summaries=reusable_summary_map,
-        chapters_to_refresh=refresh_indexes,
-        language=language,
-        precise_analysis=precise_analysis,
-        progress_callback=on_progress,
-        chapter_callback=on_chapter_summary,
-        chapter_parallel=chapter_parallel,
-    )
-    if upload_id:
-        update_upload_progress(
-            upload_id,
-            status="processing",
-            progress=99,
-            stage="saving",
-            message="요약 Markdown 저장 중",
-            book_title=summary.book_title,
-        )
-    saved_dir = save_book_summary(summary, root_dir=output_dir)
-    prune_chapter_files(summary.book_title, summary.chapter_summaries, root_dir=output_dir)
-    save_chapter_digest_index(summary.book_title, digest_map, root_dir=output_dir)
-    logger.info(
-        "[업로드 완료] file='%s' title='%s' saved_dir='%s'",
-        original_filename,
-        summary.book_title,
-        saved_dir,
-    )
-    if upload_id:
-        complete_upload_progress(upload_id, message="요약 완료")
-        update_upload_progress(upload_id, book_title=summary.book_title)
-    return summary
 
 
 @app.post("/summaries/from-epub", response_model=SummarizeResponse)
