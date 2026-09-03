@@ -105,6 +105,11 @@ def normalize_error_message(exc: Exception) -> str:
         return "AI provider 응답 대기 시간이 초과되었습니다. 잠시 후 다시 시도하세요."
     if "api key가 비어 있습니다" in text:
         return text
+    if "not a zip file" in lower or "bad zip file" in lower or "bad crc-32" in lower:
+        return (
+            "EPUB 파일을 열 수 없습니다. 파일이 손상되었거나 업로드가 완전하지 않습니다. "
+            "원본 EPUB을 다시 내려받아 업로드해 주세요."
+        )
 
     if len(text) > 420:
         return f"{text[:420]}..."

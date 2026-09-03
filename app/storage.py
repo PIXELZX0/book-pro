@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app.epub_parser import parse_epub
+from app.epub_parser import has_corrupt_entries, parse_epub, repair_epub
 from app.schemas import (
     BookSummary,
     ChapterCharacterTrait,
@@ -773,7 +773,11 @@ def save_uploaded_epub(
     book_dir = ensure_book_directories(book_title, root_dir=root_dir)
     target_name = _epub_file_name(original_filename, fallback_base=book_title or "book")
     target_path = book_dir / target_name
-    shutil.copyfile(str(source_file_path), str(target_path))
+
+    if has_corrupt_entries(source_file_path):
+        repair_epub(source_file_path, target_path)
+    else:
+        shutil.copyfile(str(source_file_path), str(target_path))
     return target_path
 
 
