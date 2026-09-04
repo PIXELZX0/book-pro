@@ -68,27 +68,93 @@ uvicorn app.main:app --reload --port 8000
 
 ### Docker
 
-Build:
+#### Build and run with `docker run`
+
+Build the image:
 
 ```bash
 docker build -t book-pro:local .
 ```
 
-Run:
+Run the container (the `books/` volume keeps summaries, Studio projects and audiobooks on the host):
 
 ```bash
-docker run --rm \
+docker run -d --name book-pro \
   -p 8000:8000 \
   -e OPENAI_API_KEY=YOUR_OPENAI_KEY \
   -v "$(pwd)/books:/app/books" \
   book-pro:local
 ```
 
-Or Docker Compose:
+Useful additions:
 
 ```bash
-docker compose up --build -d
+# Pass provider/model and a per-request default key for other providers
+docker run -d --name book-pro \
+  -p 8000:8000 \
+  --env-file .env \
+  -v "$(pwd)/books:/app/books" \
+  book-pro:local
+
+# Allow MCP agents to import EPUBs by file path
+docker run -d --name book-pro \
+  -p 8000:8000 \
+  --env-file .env \
+  -v "$(pwd)/books:/app/books" \
+  -v "$(pwd)/imports:/app/imports" \
+  -e BOOK_PRO_MCP_IMPORT_DIR=/app/imports \
+  book-pro:local
 ```
+
+Check, stop and remove:
+
+```bash
+docker logs -f book-pro
+docker stop book-pro && docker rm book-pro
+```
+
+#### Run with Docker Compose
+
+`docker-compose.yml` mounts `./books` and forwards port 8000. Environment values come from the shell or a `.env` file:
+
+```bash
+cp .env.example .env     # set OPENAI_API_KEY etc.
+docker compose up --build -d
+docker compose logs -f
+docker compose down      # containers stop; ./books data is kept
+```
+
+To let MCP agents import EPUB files by path, uncomment the `imports` volume in `docker-compose.yml` and set `BOOK_PRO_MCP_IMPORT_DIR=/app/imports` in `.env`. To protect the MCP endpoint, set `BOOK_PRO_MCP_TOKEN` in `.env` and use the same token in your MCP client.
+
+#### Pull a prebuilt image (GHCR)
+
+CI publishes multi-arch (`linux/amd64`, `linux/arm64`) images to GHCR:
+
+```bash
+docker pull ghcr.io/pixelzx0/book-pro:rc-latest     # built from v* tags/releases
+docker pull ghcr.io/pixelzx0/book-pro:test-latest   # built from main/master
+
+docker run -d --name book-pro \
+  -p 8000:8000 \
+  --env-file .env \
+  -v "$(pwd)/books:/app/books" \
+  ghcr.io/pixelzx0/book-pro:rc-latest
+```
+
+#### Verify
+
+```bash
+curl http://127.0.0.1:8000/health          # {"status":"ok"}
+open http://127.0.0.1:8000/panel           # Web panel
+open http://127.0.0.1:8000/studio          # Studio
+open http://127.0.0.1:8000/docs            # Swagger UI
+curl http://127.0.0.1:8000/mcp             # MCP endpoint (405/406 without an MCP client is normal)
+```
+
+Notes:
+- `BOOK_PRO_OUTPUT_DIR` is set to `/app/books` inside the image; always mount a volume there or generated files are lost when the container is removed.
+- The container runs as a non-root user (`appuser`); the host `books/` directory must be writable by UID 1000.
+- When the Qwen3 TTS server runs on the host, use `http://host.docker.internal:8091/v1` as `BOOK_PRO_QWEN_TTS_BASE_URL` (on Linux add `--add-host=host.docker.internal:host-gateway`).
 
 ## 4) URLs
 
