@@ -510,6 +510,59 @@ a.nav-item {
   font-size: 11px;
 }
 
+.live-output {
+  margin-top: 8px;
+}
+
+.live-output > summary {
+  cursor: pointer;
+  color: #333;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.live-output-body {
+  margin-top: 6px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 8px;
+  border: 1px solid #e4e4e4;
+  border-radius: 6px;
+  background: #fafafa;
+}
+
+.live-chapter + .live-chapter {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed #e0e0e0;
+}
+
+.live-chapter-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #222;
+}
+
+.live-chapter-summary {
+  margin-top: 4px;
+  color: #444;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.live-log {
+  margin-top: 8px;
+  color: #777;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.live-line + .live-line {
+  margin-top: 2px;
+}
+
 .pagination {
   margin-top: 14px;
   display: flex;

@@ -67,26 +67,32 @@ Provider, model, and API key can be passed per request via multipart form fields
 5. `GET /uploads/{upload_id}/progress`
 - Get single upload progress
 
-6. `GET /uploads/active`
+6. `GET /uploads/{upload_id}/stream`
+- Server-Sent Events stream of live summarization output
+- Events: `progress` (stage/progress snapshot), `chapter` (chapter summary as soon as it is generated), `done`/`failed` (terminal), `timeout`
+- Resumable with the `Last-Event-ID` header
+
+7. `GET /uploads/active`
 - List active uploads (`queued` or `processing`)
 
-7. `GET /books?page=1&page_size=10`
+8. `GET /books?page=1&page_size=10`
 - List stored books
 
-8. `GET /books/{book_slug}`
+9. `GET /books/{book_slug}`
 - Get stored summary detail (`chapter`, `character`, `setting` markdown)
 
-9. `GET /books/{book_slug}/reader`
+10. `GET /books/{book_slug}/reader`
 - Re-parse stored original EPUB and return readable chapter text
 
-10. `GET /skill.md`
+11. `GET /skill.md`
 - Returns this skill document for agent integration
 
 ## Minimal Agent Flow
 
 1. Call `POST /providers/models` to discover available models for the selected provider
 2. Call `POST /summaries/from-epub` with an `upload_id`
-3. Poll `GET /uploads/{upload_id}/progress` until completion
+3. Poll `GET /uploads/{upload_id}/progress` until completion, or follow
+   `GET /uploads/{upload_id}/stream` (SSE) to see chapter summaries as they are generated
 4. Call `GET /books` and `GET /books/{slug}` for saved summary outputs
 5. Call `GET /books/{slug}/reader` when original chapter text is needed
 

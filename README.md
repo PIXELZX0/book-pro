@@ -12,6 +12,7 @@ It also provides:
 - A web panel (`/panel`) for upload, library, detail, reader, and settings
 - A page-flip style reader in Book Detail (Google Play Books-like flow)
 - Server-side reading progress persistence for cross-browser/device resume
+- Live summarization output (SSE stream of progress and chapter summaries)
 - Audiobook generation (chapter scripts + Qwen3 Voice Design + Base Voice Clone + TTS synthesis)
 - Chat-style novel conversion (messenger-style speaker/text script, rendered as chat bubbles in the web panel)
 - An MCP server (`/mcp`, plus stdio mode) so AI agents can read books and write books in the Studio
@@ -153,6 +154,23 @@ curl -X POST "http://127.0.0.1:8000/summaries/from-epubs" \
 Concurrency behavior:
 - `max_parallel`: number of books processed at once in batch endpoint
 - `chapter_parallel`: number of chapters processed at once within each single book
+
+### Live summarization output (SSE)
+
+Stream progress events and chapter summaries as they are generated:
+
+```bash
+curl -N "http://127.0.0.1:8000/uploads/YOUR_UPLOAD_ID/stream"
+```
+
+Event types:
+- `progress`: status snapshot (`status`, `progress`, `stage`, `message`, chapter/character counters)
+- `chapter`: a finished chapter summary (`chapter_index`, `chapter_title`, `summary`, `key_events`)
+- `done` / `failed`: terminal events (the stream ends right after)
+- `timeout`: the stream ended because the job was not found or stayed idle
+
+Pass the `Last-Event-ID` header to resume a dropped stream. The web panel uses this
+endpoint to render a live output box under each upload row.
 
 ### Reader API (original text)
 

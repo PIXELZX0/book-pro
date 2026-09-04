@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi.concurrency import run_in_threadpool
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -18,9 +18,12 @@ from app.config import get_settings
 from app.epub_parser import parse_epub
 from app.mcp_server import MountPathRewriteMiddleware, build_mcp_app, mcp_mount_path
 from app.progress import (
+    TERMINAL_EVENTS,
     fail_upload_progress,
     get_upload_progress,
+    has_upload_events,
     init_upload_progress,
+    list_upload_events,
     list_upload_progress,
     update_upload_progress,
 )
@@ -94,6 +97,18 @@ SKILL_DOC_PATH = BASE_DIR / "SKILL.md"
 logger = logging.getLogger("uvicorn.error")
 DEFAULT_MULTI_SUMMARY_PARALLEL = 3
 MAX_CHAPTER_SUMMARY_PARALLEL = 8
+_UPLOAD_STREAM_POLL_INTERVAL = 0.4
+_UPLOAD_STREAM_HEARTBEAT = 10.0
+_UPLOAD_STREAM_WAIT_TIMEOUT = 30.0
+_UPLOAD_STREAM_IDLE_TIMEOUT = 900.0
+
+
+def _sse_message(event: dict[str, Any]) -> str:
+    payload = json.dumps(
+        {"seq": event["seq"], "at": event["at"], **event["data"]},
+        ensure_ascii=False,
+    )
+    return f"id: {event['seq']}\nevent: {event['event']}\ndata: {payload}\n\n"
 
 _build_summarizer = service.build_summarizer
 _normalize_error_message = service.normalize_error_message
@@ -662,6 +677,73 @@ def get_upload_progress_state(upload_id: str) -> UploadProgressResponse:
             updated_at=datetime.now(tz=timezone.utc).isoformat(),
         )
     return UploadProgressResponse.model_validate(payload)
+
+
+@app.get("/uploads/{upload_id}/stream")
+async def stream_upload_events(
+    request: Request,
+    upload_id: str,
+    last_event_id: str | None = Header(default=None),
+) -> StreamingResponse:
+    try:
+        cursor = max(0, int((last_event_id or "0").strip()))
+    except ValueError:
+        cursor = 0
+
+    async def _iter_chunks() -> Any:
+        nonlocal cursor
+        idle_seconds = 0.0
+        since_heartbeat = 0.0
+
+        while True:
+            if await request.is_disconnected():
+                return
+
+            events = list_upload_events(upload_id, after_seq=cursor)
+            for event in events:
+                cursor = max(cursor, int(event["seq"]))
+                idle_seconds = 0.0
+                yield _sse_message(event)
+                if event["event"] in TERMINAL_EVENTS:
+                    return
+
+            if idle_seconds >= _UPLOAD_STREAM_IDLE_TIMEOUT:
+                yield _sse_message(
+                    {
+                        "seq": cursor,
+                        "event": "timeout",
+                        "data": {"message": "진행 상황 스트림이 종료되었습니다."},
+                        "at": datetime.now(tz=timezone.utc).isoformat(),
+                    }
+                )
+                return
+            if not has_upload_events(upload_id) and idle_seconds >= _UPLOAD_STREAM_WAIT_TIMEOUT:
+                yield _sse_message(
+                    {
+                        "seq": cursor,
+                        "event": "timeout",
+                        "data": {"message": "요약 작업을 찾을 수 없습니다."},
+                        "at": datetime.now(tz=timezone.utc).isoformat(),
+                    }
+                )
+                return
+
+            await asyncio.sleep(_UPLOAD_STREAM_POLL_INTERVAL)
+            idle_seconds += _UPLOAD_STREAM_POLL_INTERVAL
+            since_heartbeat += _UPLOAD_STREAM_POLL_INTERVAL
+            if since_heartbeat >= _UPLOAD_STREAM_HEARTBEAT:
+                since_heartbeat = 0.0
+                yield ": ping\n\n"
+
+    return StreamingResponse(
+        _iter_chunks(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @app.get("/uploads/active", response_model=list[UploadProgressResponse])

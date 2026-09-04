@@ -200,6 +200,11 @@ const I18N_MESSAGES = {
     ask_need_question: "질문을 입력하세요.",
     ask_need_character: "캐릭터 이름을 입력하세요.",
     ask_loading: "답변 생성 중...",
+    live_output: "실시간 출력",
+    live_waiting: "요약 출력을 기다리는 중...",
+    live_chapter_done: "{index}장 요약 완료 - {title}",
+    live_toggle_hide: "접기",
+    live_toggle_show: "펼치기",
   },
   en: {
     brand_sub: "Multi-book Summary Hub",
@@ -344,6 +349,11 @@ const I18N_MESSAGES = {
     ask_need_question: "Enter a question.",
     ask_need_character: "Enter a character name.",
     ask_loading: "Generating answer...",
+    live_output: "Live output",
+    live_waiting: "Waiting for summary output...",
+    live_chapter_done: "Chapter {index} summarized - {title}",
+    live_toggle_hide: "Collapse",
+    live_toggle_show: "Expand",
   },
   ja: {
     brand_sub: "マルチブック要約ハブ",
@@ -480,6 +490,11 @@ const I18N_MESSAGES = {
     ask_need_question: "質問を入力してください。",
     ask_need_character: "キャラクター名を入力してください。",
     ask_loading: "回答を生成中...",
+    live_output: "リアルタイム出力",
+    live_waiting: "要約出力を待っています...",
+    live_chapter_done: "{index}章の要約が完了 - {title}",
+    live_toggle_hide: "閉じる",
+    live_toggle_show: "開く",
   },
 };
 
@@ -1210,6 +1225,9 @@ function addPendingUpload(fileName, options = {}) {
     error: options.error || "",
     timerId: null,
     completionTimerId: null,
+    liveLines: [],
+    liveChapters: [],
+    eventSource: null,
   };
   state.pendingUploads.unshift(row);
   renderLibraryMetrics();
@@ -1235,8 +1253,133 @@ function removePendingUpload(id) {
   if (row && row.completionTimerId) {
     window.clearTimeout(row.completionTimerId);
   }
+  if (row && row.eventSource) {
+    row.eventSource.close();
+    row.eventSource = null;
+  }
   renderLibraryMetrics();
   renderBooksTable(state.items);
+}
+
+const LIVE_MAX_LINES = 60;
+
+function appendLiveLine(rowId, text) {
+  const row = state.pendingUploads.find((item) => item.id === rowId);
+  if (!row) return;
+  const message = String(text || "").trim();
+  if (!message) return;
+
+  const lines = Array.isArray(row.liveLines) ? row.liveLines : [];
+  if (lines[lines.length - 1] === message) return;
+
+  lines.push(message);
+  updatePendingUpload(rowId, { liveLines: lines.slice(-LIVE_MAX_LINES) });
+}
+
+function appendLiveChapter(rowId, data) {
+  const row = state.pendingUploads.find((item) => item.id === rowId);
+  if (!row) return;
+
+  const index = Number(data.chapter_index) || 0;
+  const title = String(data.chapter_title || "").trim();
+  const summary = String(data.summary || "").trim();
+  const chapters = Array.isArray(row.liveChapters) ? row.liveChapters : [];
+  const existingIndex = chapters.findIndex((chapter) => chapter.index === index);
+  const entry = { index, title, summary };
+
+  if (existingIndex >= 0) {
+    chapters[existingIndex] = entry;
+  } else {
+    chapters.push(entry);
+    chapters.sort((a, b) => a.index - b.index);
+  }
+
+  updatePendingUpload(rowId, { liveChapters: chapters });
+  if (title || summary) {
+    appendLiveLine(rowId, t("live_chapter_done", { index: index || "-", title: title || "-" }));
+  }
+}
+
+function stopLiveStream(rowId) {
+  const row = state.pendingUploads.find((item) => item.id === rowId);
+  if (!row || !row.eventSource) return;
+  row.eventSource.close();
+  updatePendingUpload(rowId, { eventSource: null });
+}
+
+function startLiveStream(pendingRow) {
+  if (pendingRow.eventSource) return;
+  if (typeof EventSource !== "function") return;
+
+  const rowId = pendingRow.id;
+  const source = new EventSource(`/uploads/${encodeURIComponent(pendingRow.uploadId)}/stream`);
+
+  appendLiveLine(rowId, t("live_waiting"));
+
+  source.addEventListener("progress", (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      if (data.message) appendLiveLine(rowId, data.message);
+    } catch (_error) {
+      // 파싱 실패 이벤트는 무시한다.
+    }
+  });
+
+  source.addEventListener("chapter", (event) => {
+    try {
+      appendLiveChapter(rowId, JSON.parse(event.data));
+    } catch (_error) {
+      // 파싱 실패 이벤트는 무시한다.
+    }
+  });
+
+  source.addEventListener("failed", (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      if (data.error) appendLiveLine(rowId, data.error);
+    } catch (_error) {
+      // 파싱 실패 이벤트는 무시한다.
+    }
+    stopLiveStream(rowId);
+  });
+
+  source.addEventListener("done", () => stopLiveStream(rowId));
+  source.addEventListener("timeout", () => stopLiveStream(rowId));
+
+  updatePendingUpload(rowId, { eventSource: source });
+}
+
+function renderPendingLiveOutput(item) {
+  const chapters = Array.isArray(item.liveChapters) ? item.liveChapters : [];
+  const lines = Array.isArray(item.liveLines) ? item.liveLines : [];
+  if (!chapters.length && !lines.length) return "";
+
+  const chapterHtml = chapters
+    .map(
+      (chapter) => `
+        <div class="live-chapter">
+          <div class="live-chapter-title">${escapeHtml(chapter.index)}장 · ${escapeHtml(chapter.title || "")}</div>
+          ${chapter.summary ? `<div class="live-chapter-summary">${escapeHtml(chapter.summary)}</div>` : ""}
+        </div>
+      `,
+    )
+    .join("");
+
+  const logHtml = lines
+    .slice(-20)
+    .reverse()
+    .map((line) => `<div class="live-line">${escapeHtml(line)}</div>`)
+    .join("");
+
+  return `
+    <details class="live-output" open>
+      <summary>${escapeHtml(t("live_output"))}</summary>
+      <div class="live-output-body">
+        ${chapterHtml}
+        ${logHtml ? `<div class="live-log">${logHtml}</div>` : ""}
+      </div>
+    </details>
+  `;
 }
 
 function renderPendingMessage(item) {
@@ -1343,6 +1486,7 @@ function renderBooksTable(items) {
             <div class="progress-text">${Math.round(item.progress || 0)}%</div>
             <div class="progress-text">${escapeHtml(renderPendingMessage(item))}</div>
             ${item.error ? `<div class="error-text">${escapeHtml(item.error)}</div>` : ""}
+            ${renderPendingLiveOutput(item)}
           </td>
           <td>-</td>
           <td>-</td>
@@ -2229,6 +2373,7 @@ async function uploadSingleFile(file, config, pendingRow) {
     message: t("upload_start"),
     error: "",
   });
+  startLiveStream(pendingRow);
   const stopPolling = startProgressPolling(pendingRow);
 
   try {
@@ -2322,6 +2467,7 @@ async function summarizeBookBySlug(slug, { bookTitle = "", switchToDetail = true
     displayName: bookTitle || slug,
   });
 
+  startLiveStream(pendingRow);
   const stopPolling = startProgressPolling(pendingRow);
   try {
     const formData = buildSummarizeBookFormData(config, pendingRow.uploadId);
@@ -2490,11 +2636,13 @@ async function restoreActiveUploads() {
     const existing = findPendingUploadByUploadId(uploadId);
     if (existing) {
       updatePendingUpload(existing.id, options);
+      startLiveStream(existing);
       startProgressPolling(existing);
       continue;
     }
 
     const pendingRow = addPendingUpload(fileName, options);
+    startLiveStream(pendingRow);
     startProgressPolling(pendingRow);
   }
 }
