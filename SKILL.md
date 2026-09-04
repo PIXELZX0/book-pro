@@ -18,11 +18,15 @@ If you are an MCP client, prefer the MCP tools listed at the bottom of this docu
 - Generate chapter summaries, character summaries, world summaries, and writing-style analysis
 - Support precise analysis mode (chapter-level character traits + dialogue-based inferences)
 - Process multiple books in parallel
+- Studio (AI co-writing): create projects/series/volumes, chat and agentic file editing, a setting bible, chapter finalize, Markdown/EPUB export, trash + restore
 - Persist output files in this structure:
   - `books/book-[book-title]/chapter/c-[chapter-number]-[chapter-title].md`
   - `books/book-[book-title]/character/[character-name].md`
   - `books/book-[book-title]/setting.md`
   - `books/book-[book-title]/*.epub` (original EPUB copy)
+  - Studio-only: `studio.json`, `studio/conversation.json`, `studio/bible.json`, `studio/bible-conversation.json`, `.studio-history/`, `export/`
+  - Series: `books/series-[series-title]/series.json` (+ shared bible files)
+  - Deleted Studio containers/files move to `books/.trash/`
 
 ## Providers
 
@@ -82,6 +86,29 @@ Provider, model, and API key can be passed per request via multipart form fields
 10. `GET /skill.md`
 - Returns this skill document for agent integration
 
+Studio (REST):
+
+11. `POST /studio/projects` / `GET /studio/projects` / `GET|PATCH|DELETE /studio/projects/{slug}`
+- Create/list/get/update/delete Studio projects (delete moves to `books/.trash/`)
+
+12. `POST /studio/projects/{slug}/messages` / `POST /studio/projects/{slug}/messages/stream`
+- Co-writing chat; the stream variant returns plain-text chunks
+
+13. `POST /studio/projects/{slug}/chapters/finalize` / `GET /studio/projects/{slug}/chapters` / `GET|DELETE /studio/projects/{slug}/chapters/{index}`
+- Finalize a chapter (same-index duplicates are replaced), list/read/delete chapters
+
+14. `GET /studio/projects/{slug}/export?format=markdown|epub&include_bible=true|false`
+- Export finalized chapters (optionally with the setting bible); the same endpoint exists for series
+
+15. `GET|POST /studio/series` / `GET|PATCH|DELETE /studio/series/{slug}` / `POST /studio/series/{slug}/volumes`
+- Manage series and volumes (volumes inherit premise/genre/bible)
+
+16. `GET|POST /studio/projects/{slug}/bible...` and `/studio/series/{slug}/bible...` (`/bible`, `/bible/finalize`, `/bible/messages/stream`)
+- Read/save the setting bible and chat about world/characters
+
+17. `POST /studio/projects/{slug}/agent/stream`, `GET|POST /studio/projects/{slug}/agent/actions...`, `GET|POST /studio/projects/{slug}/agent/history...`
+- Agentic file editing with NDJSON events, pending-action apply/reject (approve mode), and snapshot restore
+
 ## Minimal Agent Flow
 
 1. Call `POST /providers/models` to discover available models for the selected provider
@@ -106,7 +133,9 @@ Ingest and summarization (asynchronous):
 Studio (writing books):
 - `create_studio_project`, `create_studio_series`, `add_series_volume`
 - `list_studio_projects`, `list_studio_series`, `get_studio_project`, `get_studio_series`
-- `studio_chat`, `finalize_chapter`
+- `update_studio_project`, `delete_studio_project`, `export_studio_book`
+- `studio_chat`, `studio_agent_chat`, `finalize_chapter`
+- `studio_list_files`, `studio_read_file`, `studio_write_file`, `studio_edit_file`, `studio_delete_file`
 - `get_bible`, `save_bible`, `bible_chat`
 
 MCP resources: `book://{slug}/overview`, `book://{slug}/chapter/{index}`, `book://{slug}/original/{index}`, `book://{slug}/setting`
@@ -117,10 +146,12 @@ MCP prompts: `read_book_guide`, `write_next_chapter`
 1. Call `list_books` (or `import_epub` + `summarize_book_start` for a new EPUB) to get a `slug`
 2. Call `get_book_overview`, then `read_chapter_summary` / `read_original_chapter` to read
 3. Call `ask_book` for questions that need whole-book reasoning
-4. To write: `create_studio_project` (or `create_studio_series` + `add_series_volume`) → `studio_chat` → `finalize_chapter`
+4. To write: `create_studio_project` (or `create_studio_series` + `add_series_volume`) → `studio_chat` (or `studio_agent_chat` for agentic file editing) → `finalize_chapter`
 5. Manage world settings and characters with `get_bible` / `bible_chat` / `save_bible`
+6. Edit project files directly with `studio_list_files` / `studio_read_file` / `studio_write_file` / `studio_edit_file` / `studio_delete_file` (sandboxed to the project + its series dir; chapters use `chapter/c-<n>-<title>.md`)
 
 Notes:
 - Summarization is asynchronous: start it, then poll `get_upload_progress_state` until `completed` or `failed`
 - EPUB import by file path requires `BOOK_PRO_MCP_IMPORT_DIR`; otherwise send base64 content
 - Resource URIs require URI-safe slugs, so prefer the tools for books with Korean or spaced titles
+- Studio file tools accept only `.md`/`.json`/`.txt` relative paths inside the sandbox; hidden files and `studio.json`/`series.json` are protected, and deletes move to `books/.trash/`

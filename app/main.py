@@ -29,6 +29,7 @@ from app.schemas import (
     AudioScriptLine,
     AudiobookCreateRequest,
     AudiobookCreateResponse,
+    BookChapterFile,
     BookReaderProgressRequest,
     BookReaderProgressResponse,
     BookUploadResponse,
@@ -37,7 +38,6 @@ from app.schemas import (
     BookListResponse,
     BookReaderResponse,
     BookSummary,
-    ChapterSummary,
     ChatScriptChapter,
     ChatScriptCreateRequest,
     ChatScriptResponse,
@@ -46,43 +46,40 @@ from app.schemas import (
     ProviderModelsResponse,
     StudioBibleFinalizeRequest,
     StudioBibleResponse,
+    StudioActionResponse,
+    StudioAgentRequest,
+    StudioChapterDeleteResponse,
     StudioChapterFinalizeRequest,
     StudioChapterFinalizeResponse,
+    StudioChapterListResponse,
+    StudioChatResponse,
+    StudioDeleteResponse,
+    StudioHistoryItem,
+    StudioHistoryRestoreRequest,
+    StudioHistoryRestoreResponse,
     StudioMessageRequest,
+    StudioPendingAction,
     StudioProjectCreateRequest,
     StudioProjectDetailResponse,
     StudioProjectResponse,
+    StudioProjectUpdateRequest,
     StudioSeriesCreateRequest,
     StudioSeriesResponse,
     StudioVolumeCreateRequest,
     SummarizeResponse,
     UploadProgressResponse,
 )
-from app.prompts import build_studio_bible_prompt, build_studio_system_prompt
 from app.provider_models import fetch_provider_models
+from app.studio_agent import iter_agent_events as studio_agent_iter_events
 from app.storage import (
     ensure_book_directories,
-    extract_section,
     get_latest_epub_path,
     list_books,
-    list_series,
-    list_series_volumes,
-    read_bible,
-    read_bible_conversation,
     read_book_detail,
     read_book_reader,
     read_book_reader_progress,
     read_book_summary_snapshot,
-    read_series,
-    read_studio_conversation,
-    read_studio_project,
-    save_bible,
-    save_bible_conversation,
     save_book_reader_progress,
-    save_chapter_summary,
-    save_series,
-    save_studio_conversation,
-    save_studio_project,
     save_uploaded_epub,
 )
 from app.summarizer import MultiProviderBookSummarizer, normalize_provider
@@ -786,123 +783,22 @@ def ask_about_book_stream(book_slug: str, payload: BookAskRequest) -> StreamingR
     )
 
 
-@app.post("/studio/projects", response_model=StudioProjectResponse)
-def create_studio_project(payload: StudioProjectCreateRequest) -> StudioProjectResponse:
-    settings = get_settings()
-    title = (payload.title or "").strip()
-    if not title:
-        raise HTTPException(status_code=400, detail="제목을 입력해 주세요.")
-
-    try:
-        project_path = save_studio_project(
-            title,
-            premise=(payload.premise or "").strip(),
-            genre=(payload.genre or "").strip(),
-            language=(payload.language or "ko").strip() or "ko",
-            root_dir=settings.output_dir,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    slug = project_path.parent.name
-    project = read_studio_project(settings.output_dir, slug=slug)
-    return StudioProjectResponse(slug=slug, chapter_count=0, **project)
+def _http_from_studio_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, FileNotFoundError):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, ValueError):
+        return HTTPException(status_code=400, detail=str(exc))
+    return HTTPException(status_code=500, detail=service.normalize_error_message(exc))
 
 
-@app.get("/studio/projects/{slug}", response_model=StudioProjectDetailResponse)
-def get_studio_project(slug: str) -> StudioProjectDetailResponse:
-    settings = get_settings()
-    try:
-        project = read_studio_project(settings.output_dir, slug=slug)
-        detail = read_book_detail(settings.output_dir, slug=slug)
-        messages = read_studio_conversation(settings.output_dir, slug=slug)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    return StudioProjectDetailResponse(
-        slug=slug,
-        chapter_count=detail["chapter_count"],
-        messages=messages,
-        **project,
-    )
-
-
-@app.post("/studio/projects/{slug}/messages/stream")
-def studio_message_stream(slug: str, payload: StudioMessageRequest) -> StreamingResponse:
-    settings = get_settings()
-    message = (payload.message or "").strip()
-    if not message:
-        raise HTTPException(status_code=400, detail="메시지를 입력해 주세요.")
-
-    try:
-        project = read_studio_project(settings.output_dir, slug=slug)
-        detail = read_book_detail(settings.output_dir, slug=slug)
-        history = read_studio_conversation(settings.output_dir, slug=slug)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    try:
-        summarizer = _build_summarizer(
-            provider=payload.provider,
-            api_key=payload.api_key,
-            model=payload.model,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    language = (payload.language or project.get("language") or "ko").strip() or "ko"
-
-    finalized_chapters = [
-        {
-            "chapter_index": chapter["index"],
-            "chapter_title": chapter["title"],
-            "summary": extract_section(chapter["markdown"], "요약") or "",
-        }
-        for chapter in detail["chapters"]
-    ]
-
-    now = datetime.now(tz=timezone.utc).isoformat()
-    user_turn = {"role": "user", "content": message, "created_at": now}
-    updated_history = history + [user_turn]
-    save_studio_conversation(settings.output_dir, slug=slug, messages=updated_history)
-
-    system_prompt = build_studio_system_prompt(
-        book_title=project["book_title"],
-        premise=project.get("premise", ""),
-        genre=project.get("genre", ""),
-        language=language,
-        finalized_chapters=finalized_chapters,
-    )
-    llm_messages = [{"role": "system", "content": system_prompt}]
-    llm_messages.extend({"role": turn["role"], "content": turn["content"]} for turn in updated_history)
-
+def _studio_stream_response(chunks: Any, *, log_label: str) -> StreamingResponse:
     def _iter_chunks() -> Any:
-        collected: list[str] = []
         try:
-            for chunk in summarizer.stream_with_messages(llm_messages):
-                if chunk:
-                    collected.append(chunk)
-                    yield chunk
+            yield from chunks
         except Exception as exc:  # noqa: BLE001
-            normalized_error = _normalize_error_message(exc)
-            logger.exception("[스튜디오 스트림 실패] /studio/projects/%s/messages/stream", slug)
+            normalized_error = service.normalize_error_message(exc)
+            logger.exception("[스튜디오 스트림 실패] %s", log_label)
             yield f"\n\n[오류] 메시지 처리 중 오류가 발생했습니다: {normalized_error}"
-            return
-
-        assistant_turn = {
-            "role": "assistant",
-            "content": "".join(collected),
-            "created_at": datetime.now(tz=timezone.utc).isoformat(),
-        }
-        save_studio_conversation(
-            settings.output_dir,
-            slug=slug,
-            messages=updated_history + [assistant_turn],
-        )
 
     return StreamingResponse(
         _iter_chunks(),
@@ -911,6 +807,47 @@ def studio_message_stream(slug: str, payload: StudioMessageRequest) -> Streaming
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
         },
+    )
+
+
+@app.post("/studio/projects", response_model=StudioProjectResponse)
+def create_studio_project(payload: StudioProjectCreateRequest) -> StudioProjectResponse:
+    try:
+        project = service.create_project(
+            payload.title,
+            premise=payload.premise,
+            genre=payload.genre,
+            language=payload.language,
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        raise _http_from_studio_error(exc) from exc
+    return StudioProjectResponse.model_validate(project)
+
+
+@app.get("/studio/projects/{slug}", response_model=StudioProjectDetailResponse)
+def get_studio_project(slug: str) -> StudioProjectDetailResponse:
+    try:
+        project = service.get_project(slug)
+    except (ValueError, FileNotFoundError) as exc:
+        raise _http_from_studio_error(exc) from exc
+    return StudioProjectDetailResponse.model_validate(project)
+
+
+@app.post("/studio/projects/{slug}/messages/stream")
+def studio_message_stream(slug: str, payload: StudioMessageRequest) -> StreamingResponse:
+    try:
+        chunks = service.iter_studio_chat(
+            slug,
+            payload.message,
+            provider=payload.provider,
+            api_key=payload.api_key,
+            model=payload.model,
+            language=payload.language,
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        raise _http_from_studio_error(exc) from exc
+    return _studio_stream_response(
+        chunks, log_label=f"/studio/projects/{slug}/messages/stream"
     )
 
 
@@ -921,224 +858,48 @@ def studio_message_stream(slug: str, payload: StudioMessageRequest) -> Streaming
 def finalize_studio_chapter(
     slug: str, payload: StudioChapterFinalizeRequest
 ) -> StudioChapterFinalizeResponse:
-    settings = get_settings()
-    chapter_title = (payload.chapter_title or "").strip()
-    if not chapter_title:
-        raise HTTPException(status_code=400, detail="챕터 제목을 입력해 주세요.")
-    content = (payload.content or "").strip()
-    if not content:
-        raise HTTPException(status_code=400, detail="챕터 내용을 입력해 주세요.")
-
     try:
-        project = read_studio_project(settings.output_dir, slug=slug)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    chapter = ChapterSummary(
-        chapter_index=payload.chapter_index,
-        chapter_title=chapter_title,
-        summary=content,
-        key_events=[],
-        character_events=[],
-        character_traits=[],
-    )
-    chapter_path = save_chapter_summary(
-        project["book_title"], chapter, root_dir=settings.output_dir
-    )
-    detail = read_book_detail(settings.output_dir, slug=slug)
-
-    return StudioChapterFinalizeResponse(
-        chapter_index=payload.chapter_index,
-        chapter_title=chapter_title,
-        file_name=chapter_path.name,
-        chapter_count=detail["chapter_count"],
-    )
-
-
-@app.get("/studio/series", response_model=list[StudioSeriesResponse])
-def get_studio_series_list() -> list[StudioSeriesResponse]:
-    settings = get_settings()
-    return [StudioSeriesResponse.model_validate(item) for item in list_series(settings.output_dir)]
-
-
-@app.post("/studio/series", response_model=StudioSeriesResponse)
-def create_studio_series(payload: StudioSeriesCreateRequest) -> StudioSeriesResponse:
-    settings = get_settings()
-    title = (payload.title or "").strip()
-    if not title:
-        raise HTTPException(status_code=400, detail="제목을 입력해 주세요.")
-
-    try:
-        series_path = save_series(
-            title,
-            premise=(payload.premise or "").strip(),
-            genre=(payload.genre or "").strip(),
-            language=(payload.language or "ko").strip() or "ko",
-            root_dir=settings.output_dir,
+        result = service.finalize_chapter(
+            slug,
+            chapter_index=payload.chapter_index,
+            chapter_title=payload.chapter_title,
+            content=payload.content,
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    slug = series_path.parent.name
-    series = read_series(settings.output_dir, slug=slug)
-    return StudioSeriesResponse(slug=slug, volumes=[], **series)
+    except (ValueError, FileNotFoundError) as exc:
+        raise _http_from_studio_error(exc) from exc
+    return StudioChapterFinalizeResponse.model_validate(result)
 
 
-@app.get("/studio/series/{slug}", response_model=StudioSeriesResponse)
-def get_studio_series(slug: str) -> StudioSeriesResponse:
-    settings = get_settings()
+@app.post("/studio/projects/{slug}/agent/stream")
+def studio_agent_stream(slug: str, payload: StudioAgentRequest) -> StreamingResponse:
     try:
-        series = read_series(settings.output_dir, slug=slug)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    volumes = list_series_volumes(settings.output_dir, series_slug=slug)
-    return StudioSeriesResponse(slug=slug, volumes=volumes, **series)
-
-
-@app.post("/studio/series/{slug}/volumes", response_model=StudioProjectResponse)
-def create_studio_volume(slug: str, payload: StudioVolumeCreateRequest) -> StudioProjectResponse:
-    settings = get_settings()
-    title = (payload.title or "").strip()
-    if not title:
-        raise HTTPException(status_code=400, detail="권 제목을 입력해 주세요.")
-
-    try:
-        series = read_series(settings.output_dir, slug=slug)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    try:
-        project_path = save_studio_project(
-            title,
-            premise=series.get("premise", ""),
-            genre=series.get("genre", ""),
-            language=series.get("language", "ko"),
-            root_dir=settings.output_dir,
-            book_format="long",
-            series_slug=slug,
-            volume_index=payload.volume_index,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    volume_slug = project_path.parent.name
-    bible = read_bible(settings.output_dir, slug=slug)
-    if bible["setting_markdown"] or bible["characters"]:
-        save_bible(
-            settings.output_dir,
-            slug=volume_slug,
-            setting_markdown=bible["setting_markdown"],
-            characters=bible["characters"],
-        )
-
-    project = read_studio_project(settings.output_dir, slug=volume_slug)
-    return StudioProjectResponse(slug=volume_slug, chapter_count=0, **project)
-
-
-def _get_bible_response(slug: str) -> StudioBibleResponse:
-    settings = get_settings()
-    bible = read_bible(settings.output_dir, slug=slug)
-    messages = read_bible_conversation(settings.output_dir, slug=slug)
-    return StudioBibleResponse(
-        setting_markdown=bible["setting_markdown"],
-        characters=bible["characters"],
-        messages=messages,
-    )
-
-
-def _finalize_bible(slug: str, payload: StudioBibleFinalizeRequest) -> StudioBibleResponse:
-    settings = get_settings()
-    save_bible(
-        settings.output_dir,
-        slug=slug,
-        setting_markdown=payload.setting_markdown,
-        characters=[character.model_dump() for character in payload.characters],
-    )
-    return _get_bible_response(slug)
-
-
-def _stream_bible_messages(
-    *,
-    slug: str,
-    payload: StudioMessageRequest,
-    title: str,
-    premise: str,
-    genre: str,
-) -> StreamingResponse:
-    settings = get_settings()
-    message = (payload.message or "").strip()
-    if not message:
-        raise HTTPException(status_code=400, detail="메시지를 입력해 주세요.")
-
-    try:
-        bible = read_bible(settings.output_dir, slug=slug)
-        history = read_bible_conversation(settings.output_dir, slug=slug)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    try:
-        summarizer = _build_summarizer(
+        events = studio_agent_iter_events(
+            slug,
+            payload.message,
             provider=payload.provider,
             api_key=payload.api_key,
             model=payload.model,
+            language=payload.language,
+            mode=payload.mode,
+            max_steps=payload.max_steps,
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (ValueError, FileNotFoundError) as exc:
+        raise _http_from_studio_error(exc) from exc
 
-    language = (payload.language or "ko").strip() or "ko"
-
-    now = datetime.now(tz=timezone.utc).isoformat()
-    user_turn = {"role": "user", "content": message, "created_at": now}
-    updated_history = history + [user_turn]
-    save_bible_conversation(settings.output_dir, slug=slug, messages=updated_history)
-
-    system_prompt = build_studio_bible_prompt(
-        title=title,
-        premise=premise,
-        genre=genre,
-        language=language,
-        existing_setting=bible["setting_markdown"],
-        existing_characters=bible["characters"],
-    )
-    llm_messages = [{"role": "system", "content": system_prompt}]
-    llm_messages.extend({"role": turn["role"], "content": turn["content"]} for turn in updated_history)
-
-    def _iter_chunks() -> Any:
-        collected: list[str] = []
+    def _iter_ndjson() -> Any:
         try:
-            for chunk in summarizer.stream_with_messages(llm_messages):
-                if chunk:
-                    collected.append(chunk)
-                    yield chunk
+            for event in events:
+                yield json.dumps(event, ensure_ascii=False) + "\n"
         except Exception as exc:  # noqa: BLE001
-            normalized_error = _normalize_error_message(exc)
-            logger.exception("[설정집 스트림 실패] slug=%s", slug)
-            yield f"\n\n[오류] 메시지 처리 중 오류가 발생했습니다: {normalized_error}"
-            return
-
-        assistant_turn = {
-            "role": "assistant",
-            "content": "".join(collected),
-            "created_at": datetime.now(tz=timezone.utc).isoformat(),
-        }
-        save_bible_conversation(
-            settings.output_dir,
-            slug=slug,
-            messages=updated_history + [assistant_turn],
-        )
+            normalized_error = service.normalize_error_message(exc)
+            logger.exception("[스튜디오 에이전트 스트림 실패] slug='%s'", slug)
+            yield json.dumps(
+                {"type": "error", "message": normalized_error}, ensure_ascii=False
+            ) + "\n"
 
     return StreamingResponse(
-        _iter_chunks(),
-        media_type="text/plain; charset=utf-8",
+        _iter_ndjson(),
+        media_type="application/x-ndjson; charset=utf-8",
         headers={
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
@@ -1146,89 +907,328 @@ def _stream_bible_messages(
     )
 
 
+@app.get("/studio/projects/{slug}/agent/actions", response_model=list[StudioPendingAction])
+def list_studio_agent_actions(slug: str) -> list[StudioPendingAction]:
+    try:
+        actions = service.list_studio_pending_actions(slug)
+    except (ValueError, FileNotFoundError) as exc:
+        raise _http_from_studio_error(exc) from exc
+    return [StudioPendingAction.model_validate(action) for action in actions]
+
+
+@app.post("/studio/projects/{slug}/agent/actions/{action_id}/apply", response_model=StudioActionResponse)
+def apply_studio_agent_action(slug: str, action_id: str) -> StudioActionResponse:
+    try:
+        result = service.apply_studio_pending_action(slug, action_id)
+    except (ValueError, FileNotFoundError) as exc:
+        raise _http_from_studio_error(exc) from exc
+    return StudioActionResponse.model_validate(result)
+
+
+@app.post("/studio/projects/{slug}/agent/actions/{action_id}/reject", response_model=StudioActionResponse)
+def reject_studio_agent_action(slug: str, action_id: str) -> StudioActionResponse:
+    try:
+        result = service.reject_studio_pending_action(slug, action_id)
+    except (ValueError, FileNotFoundError) as exc:
+        raise _http_from_studio_error(exc) from exc
+    return StudioActionResponse.model_validate(result)
+
+
+@app.get("/studio/projects/{slug}/agent/history", response_model=list[StudioHistoryItem])
+def list_studio_agent_history(slug: str) -> list[StudioHistoryItem]:
+    try:
+        entries = service.list_studio_file_history(slug)
+    except (ValueError, FileNotFoundError) as exc:
+        raise _http_from_studio_error(exc) from exc
+    return [StudioHistoryItem.model_validate(entry) for entry in entries]
+
+
+@app.post(
+    "/studio/projects/{slug}/agent/history/restore",
+    response_model=StudioHistoryRestoreResponse,
+)
+def restore_studio_agent_history(
+    slug: str, payload: StudioHistoryRestoreRequest
+) -> StudioHistoryRestoreResponse:
+    try:
+        result = service.restore_studio_file_history(slug, payload.entry_id)
+    except (ValueError, FileNotFoundError) as exc:
+        raise _http_from_studio_error(exc) from exc
+    return StudioHistoryRestoreResponse.model_validate(result)
+
+
+@app.get("/studio/series", response_model=list[StudioSeriesResponse])
+def get_studio_series_list() -> list[StudioSeriesResponse]:
+    return [
+        StudioSeriesResponse.model_validate(item) for item in service.list_studio_series()
+    ]
+
+
+@app.post("/studio/series", response_model=StudioSeriesResponse)
+def create_studio_series(payload: StudioSeriesCreateRequest) -> StudioSeriesResponse:
+    try:
+        series = service.create_series(
+            payload.title,
+            premise=payload.premise,
+            genre=payload.genre,
+            language=payload.language,
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        raise _http_from_studio_error(exc) from exc
+    return StudioSeriesResponse.model_validate(series)
+
+
+@app.get("/studio/series/{slug}", response_model=StudioSeriesResponse)
+def get_studio_series(slug: str) -> StudioSeriesResponse:
+    try:
+        series = service.get_series(slug)
+    except (ValueError, FileNotFoundError) as exc:
+        raise _http_from_studio_error(exc) from exc
+    return StudioSeriesResponse.model_validate(series)
+
+
+@app.post("/studio/series/{slug}/volumes", response_model=StudioProjectResponse)
+def create_studio_volume(slug: str, payload: StudioVolumeCreateRequest) -> StudioProjectResponse:
+    try:
+        project = service.add_series_volume(
+            slug,
+            payload.title,
+            volume_index=payload.volume_index,
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        raise _http_from_studio_error(exc) from exc
+    return StudioProjectResponse.model_validate(project)
+
+
+@app.get("/studio/projects", response_model=list[StudioProjectResponse])
+def get_studio_project_list() -> list[StudioProjectResponse]:
+    return [
+        StudioProjectResponse.model_validate(item)
+        for item in service.list_studio_projects()
+    ]
+
+
+@app.post("/studio/projects/{slug}/messages", response_model=StudioChatResponse)
+def studio_message(slug: str, payload: StudioMessageRequest) -> StudioChatResponse:
+    try:
+        result = service.studio_chat(
+            slug,
+            payload.message,
+            provider=payload.provider,
+            api_key=payload.api_key,
+            model=payload.model,
+            language=payload.language,
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        raise _http_from_studio_error(exc) from exc
+    return StudioChatResponse.model_validate(result)
+
+
+@app.patch("/studio/projects/{slug}", response_model=StudioProjectResponse)
+def update_studio_project_endpoint(
+    slug: str, payload: StudioProjectUpdateRequest
+) -> StudioProjectResponse:
+    try:
+        service.update_project(
+            slug,
+            premise=payload.premise,
+            genre=payload.genre,
+            language=payload.language,
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        raise _http_from_studio_error(exc) from exc
+    return StudioProjectResponse.model_validate(service.get_project(slug))
+
+
+@app.delete("/studio/projects/{slug}", response_model=StudioDeleteResponse)
+def delete_studio_project_endpoint(slug: str) -> StudioDeleteResponse:
+    try:
+        result = service.delete_project(slug)
+    except (ValueError, FileNotFoundError) as exc:
+        raise _http_from_studio_error(exc) from exc
+    return StudioDeleteResponse.model_validate(result)
+
+
+@app.get("/studio/projects/{slug}/chapters", response_model=StudioChapterListResponse)
+def get_studio_project_chapters(slug: str) -> StudioChapterListResponse:
+    try:
+        result = service.list_project_chapters(slug)
+    except (ValueError, FileNotFoundError) as exc:
+        raise _http_from_studio_error(exc) from exc
+    return StudioChapterListResponse.model_validate(result)
+
+
+@app.get("/studio/projects/{slug}/chapters/{chapter_index}", response_model=BookChapterFile)
+def get_studio_project_chapter(slug: str, chapter_index: int) -> BookChapterFile:
+    try:
+        result = service.get_project_chapter(slug, chapter_index)
+    except (ValueError, FileNotFoundError) as exc:
+        raise _http_from_studio_error(exc) from exc
+    return BookChapterFile.model_validate(result)
+
+
+@app.delete(
+    "/studio/projects/{slug}/chapters/{chapter_index}",
+    response_model=StudioChapterDeleteResponse,
+)
+def delete_studio_project_chapter(
+    slug: str, chapter_index: int
+) -> StudioChapterDeleteResponse:
+    try:
+        result = service.delete_project_chapter(slug, chapter_index)
+    except (ValueError, FileNotFoundError) as exc:
+        raise _http_from_studio_error(exc) from exc
+    return StudioChapterDeleteResponse.model_validate(result)
+
+
+@app.get("/studio/projects/{slug}/export")
+def export_studio_project_file(
+    slug: str,
+    format: str = Query(default="markdown"),
+    include_bible: bool = Query(default=False),
+) -> FileResponse:
+    return _studio_export_file_response(slug, format=format, include_bible=include_bible)
+
+
+@app.patch("/studio/series/{slug}", response_model=StudioSeriesResponse)
+def update_studio_series_endpoint(
+    slug: str, payload: StudioProjectUpdateRequest
+) -> StudioSeriesResponse:
+    try:
+        service.update_series(
+            slug,
+            premise=payload.premise,
+            genre=payload.genre,
+            language=payload.language,
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        raise _http_from_studio_error(exc) from exc
+    return StudioSeriesResponse.model_validate(service.get_series(slug))
+
+
+@app.delete("/studio/series/{slug}", response_model=StudioDeleteResponse)
+def delete_studio_series_endpoint(slug: str) -> StudioDeleteResponse:
+    try:
+        result = service.delete_series(slug)
+    except (ValueError, FileNotFoundError) as exc:
+        raise _http_from_studio_error(exc) from exc
+    return StudioDeleteResponse.model_validate(result)
+
+
+@app.get("/studio/series/{slug}/export")
+def export_studio_series_file(
+    slug: str,
+    format: str = Query(default="markdown"),
+    include_bible: bool = Query(default=False),
+) -> FileResponse:
+    return _studio_export_file_response(slug, format=format, include_bible=include_bible)
+
+
+def _studio_export_file_response(
+    slug: str,
+    *,
+    format: str,
+    include_bible: bool,
+) -> FileResponse:
+    try:
+        result = service.export_studio_book(
+            slug,
+            export_format=format,
+            include_bible=include_bible,
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        raise _http_from_studio_error(exc) from exc
+    media_type = (
+        "application/epub+zip" if result["format"] == "epub" else "text/markdown; charset=utf-8"
+    )
+    return FileResponse(
+        result["path"],
+        filename=result["file_name"],
+        media_type=media_type,
+    )
+
+
 @app.get("/studio/projects/{slug}/bible", response_model=StudioBibleResponse)
 def get_studio_book_bible(slug: str) -> StudioBibleResponse:
-    settings = get_settings()
     try:
-        read_studio_project(settings.output_dir, slug=slug)
-        return _get_bible_response(slug)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        state = service.get_bible_state(slug, container_type="book")
+    except (ValueError, FileNotFoundError) as exc:
+        raise _http_from_studio_error(exc) from exc
+    return StudioBibleResponse.model_validate(state)
 
 
 @app.post("/studio/projects/{slug}/bible/finalize", response_model=StudioBibleResponse)
 def finalize_studio_book_bible(slug: str, payload: StudioBibleFinalizeRequest) -> StudioBibleResponse:
-    settings = get_settings()
     try:
-        read_studio_project(settings.output_dir, slug=slug)
-        return _finalize_bible(slug, payload)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        state = service.save_bible_state(
+            slug,
+            container_type="book",
+            setting_markdown=payload.setting_markdown,
+            characters=[character.model_dump() for character in payload.characters],
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        raise _http_from_studio_error(exc) from exc
+    return StudioBibleResponse.model_validate(state)
 
 
 @app.post("/studio/projects/{slug}/bible/messages/stream")
 def studio_book_bible_stream(slug: str, payload: StudioMessageRequest) -> StreamingResponse:
-    settings = get_settings()
     try:
-        project = read_studio_project(settings.output_dir, slug=slug)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    return _stream_bible_messages(
-        slug=slug,
-        payload=payload,
-        title=project["book_title"],
-        premise=project.get("premise", ""),
-        genre=project.get("genre", ""),
+        chunks = service.iter_bible_chat(
+            slug,
+            payload.message,
+            container_type="book",
+            provider=payload.provider,
+            api_key=payload.api_key,
+            model=payload.model,
+            language=payload.language,
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        raise _http_from_studio_error(exc) from exc
+    return _studio_stream_response(
+        chunks, log_label=f"/studio/projects/{slug}/bible/messages/stream"
     )
 
 
 @app.get("/studio/series/{slug}/bible", response_model=StudioBibleResponse)
 def get_studio_series_bible(slug: str) -> StudioBibleResponse:
-    settings = get_settings()
     try:
-        read_series(settings.output_dir, slug=slug)
-        return _get_bible_response(slug)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        state = service.get_bible_state(slug, container_type="series")
+    except (ValueError, FileNotFoundError) as exc:
+        raise _http_from_studio_error(exc) from exc
+    return StudioBibleResponse.model_validate(state)
 
 
 @app.post("/studio/series/{slug}/bible/finalize", response_model=StudioBibleResponse)
 def finalize_studio_series_bible(slug: str, payload: StudioBibleFinalizeRequest) -> StudioBibleResponse:
-    settings = get_settings()
     try:
-        read_series(settings.output_dir, slug=slug)
-        return _finalize_bible(slug, payload)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        state = service.save_bible_state(
+            slug,
+            container_type="series",
+            setting_markdown=payload.setting_markdown,
+            characters=[character.model_dump() for character in payload.characters],
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        raise _http_from_studio_error(exc) from exc
+    return StudioBibleResponse.model_validate(state)
 
 
 @app.post("/studio/series/{slug}/bible/messages/stream")
 def studio_series_bible_stream(slug: str, payload: StudioMessageRequest) -> StreamingResponse:
-    settings = get_settings()
     try:
-        series = read_series(settings.output_dir, slug=slug)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    return _stream_bible_messages(
-        slug=slug,
-        payload=payload,
-        title=series["series_title"],
-        premise=series.get("premise", ""),
-        genre=series.get("genre", ""),
+        chunks = service.iter_bible_chat(
+            slug,
+            payload.message,
+            container_type="series",
+            provider=payload.provider,
+            api_key=payload.api_key,
+            model=payload.model,
+            language=payload.language,
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        raise _http_from_studio_error(exc) from exc
+    return _studio_stream_response(
+        chunks, log_label=f"/studio/series/{slug}/bible/messages/stream"
     )
 
 

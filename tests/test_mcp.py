@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -55,6 +56,15 @@ EXPECTED_TOOLS = {
     "get_studio_series",
     "get_studio_project",
     "studio_chat",
+    "update_studio_project",
+    "delete_studio_project",
+    "export_studio_book",
+    "studio_agent_chat",
+    "studio_list_files",
+    "studio_read_file",
+    "studio_write_file",
+    "studio_edit_file",
+    "studio_delete_file",
     "finalize_chapter",
     "get_bible",
     "save_bible",
@@ -365,6 +375,125 @@ def test_bible_chat_uses_series_metadata(monkeypatch: pytest.MonkeyPatch) -> Non
         assert reply["reply"] == "설정집 초안"
         assert reply["container_type"] == "series"
         assert "연대기" in stub.messages[0]["content"]
+
+    _run(scenario)
+
+
+def test_studio_project_update_delete_export() -> None:
+    async def scenario(client: Client) -> None:
+        project = await _call(client, "create_studio_project", {"title": "수정 소설"})
+        slug = project["slug"]
+
+        updated = await _call(
+            client,
+            "update_studio_project",
+            {"slug": slug, "genre": "로맨스", "language": "en"},
+        )
+        assert updated["genre"] == "로맨스"
+        assert updated["language"] == "en"
+
+        await _call(
+            client,
+            "finalize_chapter",
+            {"slug": slug, "chapter_index": 1, "chapter_title": "첫 장", "content": "내용"},
+        )
+
+        exported = await _call(
+            client,
+            "export_studio_book",
+            {"slug": slug, "export_format": "markdown", "include_bible": True},
+        )
+        assert exported["format"] == "markdown"
+        assert exported["path"].endswith(".md")
+        assert Path(exported["path"]).exists()
+
+        deleted = await _call(client, "delete_studio_project", {"slug": slug})
+        assert deleted["container_type"] == "book"
+        assert ".trash" in deleted["trash_path"]
+
+        with pytest.raises(ToolError, match="찾을 수 없습니다"):
+            await _call(client, "get_studio_project", {"slug": slug})
+
+    _run(scenario)
+
+
+def test_studio_file_tools_flow() -> None:
+    async def scenario(client: Client) -> None:
+        project = await _call(client, "create_studio_project", {"title": "파일 도구 소설"})
+        slug = project["slug"]
+
+        written = await _call(
+            client,
+            "studio_write_file",
+            {"slug": slug, "path": "chapter/c-1-시작.md", "content": "첫 문장이다."},
+        )
+        assert written["created"] is True
+
+        read = await _call(client, "studio_read_file", {"slug": slug, "path": "chapter/c-1-시작.md"})
+        assert "첫 문장이다." in read["content"]
+
+        edited = await _call(
+            client,
+            "studio_edit_file",
+            {"slug": slug, "path": "chapter/c-1-시작.md", "find": "첫 문장", "replace": "두 번째 문장"},
+        )
+        assert edited["replaced"] == 1
+
+        listing = await _call(client, "studio_list_files", {"slug": slug, "path": ""})
+        assert "chapter/c-1-시작.md" in listing["files"]
+
+        deleted = await _call(
+            client, "studio_delete_file", {"slug": slug, "path": "chapter/c-1-시작.md"}
+        )
+        assert ".trash" in deleted["trash_path"]
+
+        with pytest.raises(ToolError, match="상위 디렉터리"):
+            await _call(
+                client,
+                "studio_read_file",
+                {"slug": slug, "path": "../누군가의-책/setting.md"},
+            )
+
+    _run(scenario)
+
+
+def test_studio_agent_chat_runs_tool_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    class AgentStubSummarizer:
+        def __init__(self) -> None:
+            self.step = 0
+
+        def stream_with_tools(self, messages, tools=None, temperature=0.4):
+            self.step += 1
+            if self.step == 1:
+                yield {"type": "tool_calls", "calls": [
+                    {
+                        "id": "c1",
+                        "name": "write_file",
+                        "arguments": json.dumps(
+                            {"path": "chapter/c-1-오프닝.md", "content": "1장 본문"},
+                            ensure_ascii=False,
+                        ),
+                    }
+                ]}
+            else:
+                yield {"type": "text_delta", "text": "1장을 저장했습니다."}
+
+    stub = AgentStubSummarizer()
+    monkeypatch.setattr(service, "build_summarizer", lambda **kwargs: stub)
+
+    async def scenario(client: Client) -> None:
+        project = await _call(client, "create_studio_project", {"title": "에이전트 소설"})
+        slug = project["slug"]
+
+        result = await _call(
+            client, "studio_agent_chat", {"slug": slug, "message": "1장 써 줘", "mode": "auto"}
+        )
+        assert result["reply"] == "1장을 저장했습니다."
+        assert result["steps"] == 2
+        assert result["actions"][0]["tool"] == "write_file"
+
+        read = await _call(client, "studio_read_file", {"slug": slug, "path": "chapter/c-1-오프닝.md"})
+        assert "1장 본문" in read["content"]
 
     _run(scenario)
 

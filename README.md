@@ -14,6 +14,7 @@ It also provides:
 - Server-side reading progress persistence for cross-browser/device resume
 - Audiobook generation (chapter scripts + Qwen3 Voice Design + Base Voice Clone + TTS synthesis)
 - Chat-style novel conversion (messenger-style speaker/text script, rendered as chat bubbles in the web panel)
+- A Studio (`/studio`) for AI co-writing: chat, series/volumes, a setting bible, agentic file tools, chapter finalize, export (Markdown/EPUB), trash + restore
 - An MCP server (`/mcp`, plus stdio mode) so AI agents can read books and write books in the Studio
 
 ## Key Features
@@ -24,6 +25,7 @@ It also provides:
 - Multi-book batch processing (`max_parallel`)
 - Reader progress API with server persistence (`.reader-progress.json`)
 - Q&A over summarized book content (`/ask`, `/ask/stream`)
+- Studio co-writing with an agentic file sandbox (`read`/`list`/`write`/`edit`/`delete` inside `books/<project>/` + its series dir, with snapshots/undo and an optional approval mode)
 - MCP tools for library reading, Studio co-writing, and asynchronous EPUB summarization
 - Docker and GitHub Actions CI/CD support
 
@@ -265,6 +267,78 @@ curl -X GET "http://127.0.0.1:8000/books/book-your-book-slug/chat-script"
 
 Output stored at `books/book-<title>/chat/script.json`. In the web panel, open a book and use the **Chat** tab to generate/view it as a chat-bubble reading mode.
 
+### Studio (AI co-writing)
+
+All Studio endpoints live under `/studio`. The web page is at <http://127.0.0.1:8000/studio>.
+
+Create a project, chat with the AI, and finalize chapters:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/studio/projects" \
+  -H "Content-Type: application/json" \
+  -d '{"title": "새 소설", "premise": "도서관의 비밀", "genre": "미스터리", "language": "ko"}'
+
+curl -N -X POST "http://127.0.0.1:8000/studio/projects/book-새-소설/messages/stream" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "1장을 써 줘", "provider": "open-ai", "model": "gpt-4.1-mini", "api_key": "YOUR_KEY"}'
+
+curl -X POST "http://127.0.0.1:8000/studio/projects/book-새-소설/chapters/finalize" \
+  -H "Content-Type: application/json" \
+  -d '{"chapter_index": 1, "chapter_title": "시작", "content": "옛날 옛적에..."}'
+```
+
+Series, volumes, and the shared setting bible:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/studio/series" -H "Content-Type: application/json" -d '{"title": "장편 시리즈"}'
+curl -X POST "http://127.0.0.1:8000/studio/series/series-장편-시리즈/volumes" -H "Content-Type: application/json" -d '{"title": "1권", "volume_index": 1}'
+curl -X GET  "http://127.0.0.1:8000/studio/series/series-장편-시리즈/bible"
+curl -X POST "http://127.0.0.1:8000/studio/series/series-장편-시리즈/bible/finalize" \
+  -H "Content-Type: application/json" \
+  -d '{"setting_markdown": "# 세계관", "characters": [{"name": "주인공", "markdown": "## 주인공\n용사"}]}'
+```
+
+Project management (list / update / delete / chapters / export):
+
+```bash
+curl -X GET    "http://127.0.0.1:8000/studio/projects"
+curl -X PATCH  "http://127.0.0.1:8000/studio/projects/book-새-소설" -H "Content-Type: application/json" -d '{"genre": "판타지"}'
+curl -X DELETE "http://127.0.0.1:8000/studio/projects/book-새-소설"            # moves to books/.trash/
+curl -X GET    "http://127.0.0.1:8000/studio/projects/book-새-소설/chapters"
+curl -X DELETE "http://127.0.0.1:8000/studio/projects/book-새-소설/chapters/1"
+curl -OJ       "http://127.0.0.1:8000/studio/projects/book-새-소설/export?format=epub&include_bible=true"
+curl -OJ       "http://127.0.0.1:8000/studio/series/series-장편-시리즈/export?format=markdown"
+```
+
+### Studio agentic file tools
+
+With `mode: "auto"`, the agent reads/writes project files itself and streams NDJSON events
+(`text_delta`, `tool_call`, `notice`, `error`, `done`):
+
+```bash
+curl -N -X POST "http://127.0.0.1:8000/studio/projects/book-새-소설/agent/stream" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "기존 챕터를 읽고 2장 초안을 써 줘", "mode": "auto", "api_key": "YOUR_KEY"}'
+```
+
+- The sandbox is limited to the project directory (and its series directory for volumes).
+- Allowed files: `.md`, `.json`, `.txt` (no hidden files; `studio.json`/`series.json` are read-only).
+- Every `write`/`edit` keeps a snapshot under `books/<project>/.studio-history/` and deletes go to `books/.trash/`.
+
+```bash
+curl -X GET  "http://127.0.0.1:8000/studio/projects/book-새-소설/agent/history"
+curl -X POST "http://127.0.0.1:8000/studio/projects/book-새-소설/agent/history/restore" \
+  -H "Content-Type: application/json" -d '{"entry_id": "<entry id>"}'
+```
+
+With `mode: "approve"`, write/edit/delete calls become pending actions that must be confirmed:
+
+```bash
+curl -X GET  "http://127.0.0.1:8000/studio/projects/book-새-소설/agent/actions"
+curl -X POST "http://127.0.0.1:8000/studio/projects/book-새-소설/agent/actions/<action_id>/apply"
+curl -X POST "http://127.0.0.1:8000/studio/projects/book-새-소설/agent/actions/<action_id>/reject"
+```
+
 ## 6) MCP Server (AI Agents)
 
 `book-pro` ships an MCP server so AI agents can read books from the library and write books in the Studio.
@@ -307,9 +381,14 @@ Studio (writing books):
 | `create_studio_project`, `create_studio_series` | Create a single book or a multi-volume series |
 | `add_series_volume` | Add a volume (inherits series premise/genre/bible) |
 | `list_studio_projects`, `list_studio_series`, `get_studio_project`, `get_studio_series` | Browse projects/series |
+| `update_studio_project` | Update project premise/genre/language |
 | `studio_chat` | Co-write with the Studio assistant (conversation is persisted) |
+| `studio_agent_chat` | Agentic co-writing: the assistant reads/writes project files via file tools before answering |
+| `studio_list_files`, `studio_read_file`, `studio_write_file`, `studio_edit_file`, `studio_delete_file` | File tools inside the project sandbox (delete moves to `books/.trash`) |
 | `finalize_chapter` | Save a chapter as a finalized markdown file |
 | `get_bible`, `save_bible`, `bible_chat` | Manage world settings and character sheets |
+| `export_studio_book` | Export a project/series to Markdown or EPUB |
+| `delete_studio_project` | Move a project or series to `books/.trash` |
 
 MCP resources (`book://{slug}/overview`, `book://{slug}/chapter/{index}`, `book://{slug}/original/{index}`, `book://{slug}/setting`) and prompts (`read_book_guide`, `write_next_chapter`) are also exposed. Resource URIs must be URI-safe, so books whose slug contains spaces or non-ASCII characters (common for Korean titles) are best read through the tools.
 
@@ -465,6 +544,7 @@ After successful processing, files are stored like:
 books/
   book-<title>/
     <uploaded-book>.epub
+    studio.json                  (Studio projects only)
     .chapter-digests.json
     .reader-progress.json
     chapter/
@@ -472,6 +552,14 @@ books/
     character/
       <character-name>.md
     setting.md
+    studio/
+      conversation.json          (Studio projects only)
+      bible.json                 (Studio projects only)
+      bible-conversation.json
+      pending-actions.json       (approval-mode agent actions)
+    .studio-history/             (agentic file snapshots + index.json)
+    export/
+      <slug>.md / <slug>.epub    (Studio export output)
     chat/
       script.json
     audiobook/
@@ -487,6 +575,17 @@ books/
       chapters/
         c-*.wav
       audiobook.wav
+  series-<title>/
+    series.json
+    setting.md
+    character/
+      <character-name>.md
+    studio/
+      bible.json
+      bible-conversation.json
+    export/
+      <slug>.md / <slug>.epub
+  .trash/                       (deleted Studio projects/series and files)
 ```
 
 ## Notes

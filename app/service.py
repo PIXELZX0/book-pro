@@ -5,6 +5,8 @@ import logging
 import os
 import re
 import tempfile
+from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -27,13 +29,17 @@ from app.provider_models import fetch_provider_models
 from app.schemas import BookSummary, ChapterSummary
 from app.storage import (
     compute_chapter_digest,
+    delete_chapter_files_by_index,
+    detach_series_volumes,
     ensure_book_directories,
     extract_section,
     get_latest_epub_path,
     list_books,
     list_series,
     list_series_volumes,
+    list_studio_projects as list_studio_project_records,
     load_chapter_digest_index,
+    move_container_to_trash,
     prune_chapter_files,
     read_bible,
     read_bible_conversation,
@@ -45,6 +51,7 @@ from app.storage import (
     read_series,
     read_studio_conversation,
     read_studio_project,
+    remove_chapter_files,
     save_bible,
     save_bible_conversation,
     save_book_reader_progress,
@@ -55,8 +62,21 @@ from app.storage import (
     save_studio_conversation,
     save_studio_project,
     save_uploaded_epub,
+    update_series_meta,
+    update_studio_project,
 )
 from app.summarizer import MultiProviderBookSummarizer, normalize_provider
+from app.studio_export import export_studio_container
+from app.studio_files import (
+    PendingActionStore,
+    StudioFileSandbox,
+    execute_pending_action as execute_pending_file_action,
+    execute_tool as execute_file_tool,
+    list_files as studio_files_list,
+    list_history as studio_files_history,
+    read_file as studio_files_read,
+    restore_history_entry as studio_files_restore,
+)
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -660,7 +680,7 @@ def create_project(
     )
     slug = project_path.parent.name
     project = read_studio_project(settings.output_dir, slug=slug)
-    logger.info("[MCP 스튜디오 프로젝트 생성] slug='%s'", slug)
+    logger.info("[스튜디오 프로젝트 생성] slug='%s'", slug)
     return {"slug": slug, "chapter_count": 0, **project}
 
 
@@ -685,7 +705,7 @@ def create_series(
     )
     slug = series_path.parent.name
     series = read_series(settings.output_dir, slug=slug)
-    logger.info("[MCP 스튜디오 시리즈 생성] slug='%s'", slug)
+    logger.info("[스튜디오 시리즈 생성] slug='%s'", slug)
     return {"slug": slug, "volumes": [], **series}
 
 
@@ -719,7 +739,7 @@ def add_series_volume(series_slug: str, title: str, *, volume_index: int) -> dic
 
     project = read_studio_project(settings.output_dir, slug=volume_slug)
     logger.info(
-        "[MCP 스튜디오 권 추가] series='%s' volume='%s' index=%s",
+        "[스튜디오 권 추가] series='%s' volume='%s' index=%s",
         series_slug,
         volume_slug,
         volume_index,
@@ -729,12 +749,8 @@ def add_series_volume(series_slug: str, title: str, *, volume_index: int) -> dic
 
 def list_studio_projects() -> list[dict[str, Any]]:
     settings = get_settings()
-    payload = list_books(settings.output_dir, page=1, page_size=50)
-    return [
-        item
-        for item in payload["items"]
-        if item.get("is_studio") and not item.get("series_slug")
-    ]
+    records = list_studio_project_records(settings.output_dir)
+    return [item for item in records if not item.get("series_slug")]
 
 
 def list_studio_series() -> list[dict[str, Any]]:
@@ -765,7 +781,18 @@ def get_project(slug: str) -> dict[str, Any]:
     }
 
 
-def studio_chat(
+@dataclass
+class _StudioChatPrep:
+    settings: Settings
+    slug: str
+    summarizer: MultiProviderBookSummarizer
+    llm_messages: list[dict[str, str]]
+    updated_history: list[dict[str, Any]]
+    chapter_count: int
+    language: str
+
+
+def _prepare_studio_chat(
     slug: str,
     message: str,
     *,
@@ -773,7 +800,7 @@ def studio_chat(
     api_key: str | None = None,
     model: str | None = None,
     language: str | None = None,
-) -> dict[str, Any]:
+) -> _StudioChatPrep:
     settings = get_settings()
     clean_message = (message or "").strip()
     if not clean_message:
@@ -809,23 +836,79 @@ def studio_chat(
     llm_messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
     llm_messages.extend({"role": turn["role"], "content": turn["content"]} for turn in updated_history)
 
-    reply = "".join(chunk for chunk in summarizer.stream_with_messages(llm_messages) if chunk)
+    return _StudioChatPrep(
+        settings=settings,
+        slug=slug,
+        summarizer=summarizer,
+        llm_messages=llm_messages,
+        updated_history=updated_history,
+        chapter_count=detail["chapter_count"],
+        language=resolved_language,
+    )
+
+
+def _stream_studio_chat(prep: _StudioChatPrep) -> Iterator[str]:
+    collected: list[str] = []
+    for chunk in prep.summarizer.stream_with_messages(prep.llm_messages):
+        if chunk:
+            collected.append(chunk)
+            yield chunk
 
     assistant_turn = {
         "role": "assistant",
-        "content": reply,
+        "content": "".join(collected),
         "created_at": datetime.now(tz=timezone.utc).isoformat(),
     }
     save_studio_conversation(
-        settings.output_dir,
-        slug=slug,
-        messages=updated_history + [assistant_turn],
+        prep.settings.output_dir,
+        slug=prep.slug,
+        messages=prep.updated_history + [assistant_turn],
     )
+
+
+def iter_studio_chat(
+    slug: str,
+    message: str,
+    *,
+    provider: str | None = None,
+    api_key: str | None = None,
+    model: str | None = None,
+    language: str | None = None,
+) -> Iterator[str]:
+    prep = _prepare_studio_chat(
+        slug,
+        message,
+        provider=provider,
+        api_key=api_key,
+        model=model,
+        language=language,
+    )
+    return _stream_studio_chat(prep)
+
+
+def studio_chat(
+    slug: str,
+    message: str,
+    *,
+    provider: str | None = None,
+    api_key: str | None = None,
+    model: str | None = None,
+    language: str | None = None,
+) -> dict[str, Any]:
+    prep = _prepare_studio_chat(
+        slug,
+        message,
+        provider=provider,
+        api_key=api_key,
+        model=model,
+        language=language,
+    )
+    reply = "".join(_stream_studio_chat(prep))
     return {
         "slug": slug,
         "reply": reply,
-        "chapter_count": detail["chapter_count"],
-        "language": resolved_language,
+        "chapter_count": prep.chapter_count,
+        "language": prep.language,
     }
 
 
@@ -845,8 +928,10 @@ def finalize_chapter(
         raise ValueError("챕터 내용을 입력해 주세요.")
 
     project = read_studio_project(settings.output_dir, slug=slug)
+    chapter_index = int(chapter_index)
+    remove_chapter_files(project["book_title"], chapter_index, root_dir=settings.output_dir)
     chapter = ChapterSummary(
-        chapter_index=int(chapter_index),
+        chapter_index=chapter_index,
         chapter_title=clean_title,
         summary=clean_content,
         key_events=[],
@@ -859,19 +944,36 @@ def finalize_chapter(
     detail = read_book_detail(settings.output_dir, slug=slug)
     return {
         "slug": slug,
-        "chapter_index": int(chapter_index),
+        "chapter_index": chapter_index,
         "chapter_title": clean_title,
         "file_name": chapter_path.name,
         "chapter_count": detail["chapter_count"],
     }
 
 
-def get_bible_state(slug: str) -> dict[str, Any]:
+def _resolve_bible_container(slug: str, container_type: str | None) -> tuple[str, dict[str, Any]]:
     settings = get_settings()
+    resolved = (container_type or "auto").strip().lower() or "auto"
+    if resolved not in {"book", "series", "auto"}:
+        raise ValueError("container_type은 book, series 또는 auto만 가능합니다.")
+
+    if resolved != "series":
+        try:
+            return "book", read_studio_project(settings.output_dir, slug=slug)
+        except FileNotFoundError:
+            if resolved == "book":
+                raise
+    return "series", read_series(settings.output_dir, slug=slug)
+
+
+def get_bible_state(slug: str, *, container_type: str = "auto") -> dict[str, Any]:
+    settings = get_settings()
+    resolved_container, _meta = _resolve_bible_container(slug, container_type)
     bible = read_bible(settings.output_dir, slug=slug)
     messages = read_bible_conversation(settings.output_dir, slug=slug)
     return {
         "slug": slug,
+        "container_type": resolved_container,
         "setting_markdown": bible["setting_markdown"],
         "characters": bible["characters"],
         "messages": messages,
@@ -892,27 +994,319 @@ def parse_bible_characters(text: str) -> list[dict[str, Any]]:
 def save_bible_state(
     slug: str,
     *,
+    container_type: str = "auto",
     setting_markdown: str | None = None,
     characters_markdown: str | None = None,
+    characters: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     settings = get_settings()
+    resolved_container, _meta = _resolve_bible_container(slug, container_type)
     current = read_bible(settings.output_dir, slug=slug)
     resolved_setting = current["setting_markdown"] if setting_markdown is None else setting_markdown
-    resolved_characters = (
-        current["characters"]
-        if characters_markdown is None
-        else parse_bible_characters(characters_markdown)
-    )
+    if characters is not None:
+        resolved_characters = [
+            {
+                "name": (character.get("name") or "").strip() or "이름없음",
+                "markdown": character.get("markdown", ""),
+            }
+            for character in characters
+        ]
+    elif characters_markdown is not None:
+        resolved_characters = parse_bible_characters(characters_markdown)
+    else:
+        resolved_characters = current["characters"]
     save_bible(
         settings.output_dir,
         slug=slug,
         setting_markdown=resolved_setting,
         characters=resolved_characters,
     )
-    return get_bible_state(slug)
+    return get_bible_state(slug, container_type=resolved_container)
 
 
-def bible_chat(
+def update_project(
+    slug: str,
+    *,
+    premise: str | None = None,
+    genre: str | None = None,
+    language: str | None = None,
+) -> dict[str, Any]:
+    settings = get_settings()
+    data = update_studio_project(
+        settings.output_dir,
+        slug=slug,
+        premise=premise,
+        genre=genre,
+        language=language,
+    )
+    detail = read_book_detail(settings.output_dir, slug=slug)
+    logger.info("[스튜디오 프로젝트 수정] slug='%s'", slug)
+    return {"slug": slug, "chapter_count": detail["chapter_count"], **data}
+
+
+def update_series(
+    slug: str,
+    *,
+    premise: str | None = None,
+    genre: str | None = None,
+    language: str | None = None,
+) -> dict[str, Any]:
+    settings = get_settings()
+    data = update_series_meta(
+        settings.output_dir,
+        slug=slug,
+        premise=premise,
+        genre=genre,
+        language=language,
+    )
+    logger.info("[스튜디오 시리즈 수정] slug='%s'", slug)
+    return {"slug": slug, "volumes": list_series_volumes(settings.output_dir, series_slug=slug), **data}
+
+
+def delete_project(slug: str) -> dict[str, Any]:
+    settings = get_settings()
+    read_studio_project(settings.output_dir, slug=slug)
+    trash_path = move_container_to_trash(settings.output_dir, slug=slug)
+    logger.info("[스튜디오 프로젝트 삭제] slug='%s' trash='%s'", slug, trash_path)
+    return {
+        "slug": slug,
+        "container_type": "book",
+        "trash_path": str(trash_path),
+        "detached_volume_slugs": [],
+    }
+
+
+def delete_series(slug: str) -> dict[str, Any]:
+    settings = get_settings()
+    read_series(settings.output_dir, slug=slug)
+    detached = detach_series_volumes(settings.output_dir, series_slug=slug)
+    trash_path = move_container_to_trash(settings.output_dir, slug=slug)
+    logger.info(
+        "[스튜디오 시리즈 삭제] slug='%s' trash='%s' detached=%d",
+        slug,
+        trash_path,
+        len(detached),
+    )
+    return {
+        "slug": slug,
+        "container_type": "series",
+        "trash_path": str(trash_path),
+        "detached_volume_slugs": detached,
+    }
+
+
+def delete_studio_container(slug: str, *, container_type: str = "auto") -> dict[str, Any]:
+    settings = get_settings()
+    resolved = (container_type or "auto").strip().lower() or "auto"
+    if resolved not in {"book", "series", "auto"}:
+        raise ValueError("container_type은 book, series 또는 auto만 가능합니다.")
+
+    if resolved != "series":
+        try:
+            read_studio_project(settings.output_dir, slug=slug)
+            return delete_project(slug)
+        except FileNotFoundError:
+            if resolved == "book":
+                raise
+    return delete_series(slug)
+
+
+def list_project_chapters(slug: str) -> dict[str, Any]:
+    settings = get_settings()
+    detail = read_book_detail(settings.output_dir, slug=slug)
+    return {
+        "slug": slug,
+        "chapter_count": detail["chapter_count"],
+        "chapters": detail["chapters"],
+    }
+
+
+def get_project_chapter(slug: str, chapter_index: int) -> dict[str, Any]:
+    settings = get_settings()
+    detail = read_book_detail(settings.output_dir, slug=slug)
+    for chapter in detail["chapters"]:
+        if chapter["index"] == int(chapter_index):
+            return {"slug": slug, **chapter}
+    raise FileNotFoundError(f"챕터를 찾을 수 없습니다: {chapter_index}장")
+
+
+def delete_project_chapter(slug: str, chapter_index: int) -> dict[str, Any]:
+    settings = get_settings()
+    read_studio_project(settings.output_dir, slug=slug)
+    removed = delete_chapter_files_by_index(
+        settings.output_dir,
+        slug=slug,
+        chapter_index=chapter_index,
+    )
+    detail = read_book_detail(settings.output_dir, slug=slug)
+    logger.info(
+        "[스튜디오 챕터 삭제] slug='%s' index=%s files=%d",
+        slug,
+        chapter_index,
+        len(removed),
+    )
+    return {
+        "slug": slug,
+        "chapter_index": int(chapter_index),
+        "deleted_file_names": removed,
+        "chapter_count": detail["chapter_count"],
+    }
+
+
+def export_studio_book(
+    slug: str,
+    *,
+    export_format: str = "markdown",
+    include_bible: bool = False,
+) -> dict[str, Any]:
+    settings = get_settings()
+    fmt = (export_format or "markdown").strip().lower()
+    if fmt not in {"markdown", "epub"}:
+        raise ValueError("export_format은 markdown 또는 epub만 가능합니다.")
+
+    resolved, _meta = _resolve_export_container(slug)
+    path = export_studio_container(
+        settings.output_dir,
+        slug=slug,
+        container_type=resolved,
+        export_format=fmt,
+        include_bible=include_bible,
+    )
+    logger.info(
+        "[스튜디오 내보내기] slug='%s' type=%s format=%s path='%s'",
+        slug,
+        resolved,
+        fmt,
+        path,
+    )
+    return {
+        "slug": slug,
+        "container_type": resolved,
+        "format": fmt,
+        "file_name": path.name,
+        "path": str(path),
+    }
+
+
+def _resolve_export_container(slug: str) -> tuple[str, dict[str, Any]]:
+    settings = get_settings()
+    try:
+        return "book", read_studio_project(settings.output_dir, slug=slug)
+    except FileNotFoundError:
+        return "series", read_series(settings.output_dir, slug=slug)
+
+
+def _studio_file_sandbox(slug: str) -> tuple[StudioFileSandbox, PendingActionStore]:
+    settings = get_settings()
+    project = read_studio_project(settings.output_dir, slug=slug)
+    sandbox = StudioFileSandbox(
+        settings.output_dir, slug=slug, series_slug=project.get("series_slug")
+    )
+    return sandbox, PendingActionStore(settings.output_dir, slug=slug)
+
+
+def studio_list_files(slug: str, path: str = "") -> dict[str, Any]:
+    sandbox, _store = _studio_file_sandbox(slug)
+    return studio_files_list(sandbox, path=path)
+
+
+def studio_read_file(
+    slug: str,
+    path: str,
+    *,
+    offset: int = 0,
+    max_chars: int | None = None,
+) -> dict[str, Any]:
+    sandbox, _store = _studio_file_sandbox(slug)
+    kwargs: dict[str, Any] = {"offset": offset}
+    if max_chars is not None:
+        kwargs["max_chars"] = max_chars
+    return studio_files_read(sandbox, path, **kwargs)
+
+
+def studio_write_file(slug: str, path: str, content: str, *, mode: str = "auto") -> dict[str, Any]:
+    sandbox, store = _studio_file_sandbox(slug)
+    return execute_file_tool(
+        sandbox,
+        name="write_file",
+        arguments={"path": path, "content": content},
+        mode=mode,
+        pending_store=store,
+    )
+
+
+def studio_edit_file(
+    slug: str,
+    path: str,
+    find: str,
+    replace: str,
+    *,
+    count: int = 1,
+    mode: str = "auto",
+) -> dict[str, Any]:
+    sandbox, store = _studio_file_sandbox(slug)
+    return execute_file_tool(
+        sandbox,
+        name="edit_file",
+        arguments={"path": path, "find": find, "replace": replace, "count": count},
+        mode=mode,
+        pending_store=store,
+    )
+
+
+def studio_delete_file(slug: str, path: str, *, mode: str = "auto") -> dict[str, Any]:
+    sandbox, store = _studio_file_sandbox(slug)
+    return execute_file_tool(
+        sandbox,
+        name="delete_file",
+        arguments={"path": path},
+        mode=mode,
+        pending_store=store,
+    )
+
+
+def list_studio_pending_actions(slug: str) -> list[dict[str, Any]]:
+    _sandbox, store = _studio_file_sandbox(slug)
+    return store.list()
+
+
+def apply_studio_pending_action(slug: str, action_id: str) -> dict[str, Any]:
+    sandbox, store = _studio_file_sandbox(slug)
+    action = store.take(action_id)
+    result = execute_pending_file_action(sandbox, action)
+    return {"slug": slug, "action_id": action_id, "status": "applied", "result": result}
+
+
+def reject_studio_pending_action(slug: str, action_id: str) -> dict[str, Any]:
+    _sandbox, store = _studio_file_sandbox(slug)
+    store.take(action_id)
+    return {"slug": slug, "action_id": action_id, "status": "rejected", "result": {}}
+
+
+def list_studio_file_history(slug: str) -> list[dict[str, Any]]:
+    settings = get_settings()
+    read_studio_project(settings.output_dir, slug=slug)
+    return studio_files_history(settings.output_dir, slug=slug)
+
+
+def restore_studio_file_history(slug: str, entry_id: str) -> dict[str, Any]:
+    settings = get_settings()
+    read_studio_project(settings.output_dir, slug=slug)
+    return studio_files_restore(settings.output_dir, slug=slug, entry_id=entry_id)
+
+
+@dataclass
+class _BibleChatPrep:
+    settings: Settings
+    slug: str
+    container_type: str
+    summarizer: MultiProviderBookSummarizer
+    llm_messages: list[dict[str, str]]
+    updated_history: list[dict[str, Any]]
+    language: str
+
+
+def _prepare_bible_chat(
     slug: str,
     message: str,
     *,
@@ -921,22 +1315,14 @@ def bible_chat(
     api_key: str | None = None,
     model: str | None = None,
     language: str | None = None,
-) -> dict[str, Any]:
+) -> _BibleChatPrep:
     settings = get_settings()
     clean_message = (message or "").strip()
     if not clean_message:
         raise ValueError("메시지를 입력해 주세요.")
 
-    resolved_container = (container_type or "book").strip().lower()
-    if resolved_container not in {"book", "series"}:
-        raise ValueError("container_type은 book 또는 series만 가능합니다.")
-
-    if resolved_container == "series":
-        meta = read_series(settings.output_dir, slug=slug)
-        title = meta["series_title"]
-    else:
-        meta = read_studio_project(settings.output_dir, slug=slug)
-        title = meta["book_title"]
+    resolved_container, meta = _resolve_bible_container(slug, container_type)
+    title = meta["series_title"] if resolved_container == "series" else meta["book_title"]
 
     bible = read_bible(settings.output_dir, slug=slug)
     history = read_bible_conversation(settings.output_dir, slug=slug)
@@ -959,23 +1345,83 @@ def bible_chat(
     llm_messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
     llm_messages.extend({"role": turn["role"], "content": turn["content"]} for turn in updated_history)
 
-    reply = "".join(chunk for chunk in summarizer.stream_with_messages(llm_messages) if chunk)
+    return _BibleChatPrep(
+        settings=settings,
+        slug=slug,
+        container_type=resolved_container,
+        summarizer=summarizer,
+        llm_messages=llm_messages,
+        updated_history=updated_history,
+        language=resolved_language,
+    )
+
+
+def _stream_bible_chat(prep: _BibleChatPrep) -> Iterator[str]:
+    collected: list[str] = []
+    for chunk in prep.summarizer.stream_with_messages(prep.llm_messages):
+        if chunk:
+            collected.append(chunk)
+            yield chunk
 
     assistant_turn = {
         "role": "assistant",
-        "content": reply,
+        "content": "".join(collected),
         "created_at": datetime.now(tz=timezone.utc).isoformat(),
     }
     save_bible_conversation(
-        settings.output_dir,
-        slug=slug,
-        messages=updated_history + [assistant_turn],
+        prep.settings.output_dir,
+        slug=prep.slug,
+        messages=prep.updated_history + [assistant_turn],
     )
+
+
+def iter_bible_chat(
+    slug: str,
+    message: str,
+    *,
+    container_type: str = "book",
+    provider: str | None = None,
+    api_key: str | None = None,
+    model: str | None = None,
+    language: str | None = None,
+) -> Iterator[str]:
+    prep = _prepare_bible_chat(
+        slug,
+        message,
+        container_type=container_type,
+        provider=provider,
+        api_key=api_key,
+        model=model,
+        language=language,
+    )
+    return _stream_bible_chat(prep)
+
+
+def bible_chat(
+    slug: str,
+    message: str,
+    *,
+    container_type: str = "book",
+    provider: str | None = None,
+    api_key: str | None = None,
+    model: str | None = None,
+    language: str | None = None,
+) -> dict[str, Any]:
+    prep = _prepare_bible_chat(
+        slug,
+        message,
+        container_type=container_type,
+        provider=provider,
+        api_key=api_key,
+        model=model,
+        language=language,
+    )
+    reply = "".join(_stream_bible_chat(prep))
     return {
         "slug": slug,
-        "container_type": resolved_container,
+        "container_type": prep.container_type,
         "reply": reply,
-        "language": resolved_language,
+        "language": prep.language,
     }
 
 

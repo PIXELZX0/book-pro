@@ -5,6 +5,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from app.epub_parser import has_corrupt_entries, parse_epub, repair_epub
 from app.schemas import (
@@ -520,7 +521,7 @@ def save_studio_project(
 ) -> Path:
     root = Path(root_dir)
     book_dir = root / _book_dir_name(book_title)
-    if book_dir.exists() and not is_studio_book(book_dir):
+    if book_dir.exists():
         raise ValueError(f"이미 존재하는 책과 이름이 겹칩니다: {book_title}")
 
     ensure_book_directories(book_title, root_dir=root_dir)
@@ -576,6 +577,146 @@ def save_studio_conversation(root_dir: str | Path, *, slug: str, messages: list[
         encoding="utf-8",
     )
     return conversation_path
+
+
+def list_studio_projects(root_dir: str | Path) -> list[dict]:
+    root = Path(root_dir)
+    projects = []
+    for book_dir in _book_dirs(root):
+        studio_path = book_dir / _STUDIO_PROJECT_FILE
+        if not studio_path.exists():
+            continue
+        try:
+            data = json.loads(studio_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        chapter_count = len(list((book_dir / "chapter").glob("*.md")))
+        projects.append({"slug": book_dir.name, "chapter_count": chapter_count, **data})
+    projects.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+    return projects
+
+
+def update_studio_project(
+    root_dir: str | Path,
+    *,
+    slug: str,
+    premise: str | None = None,
+    genre: str | None = None,
+    language: str | None = None,
+) -> dict:
+    root = Path(root_dir)
+    project_path = _safe_book_path(root, slug) / _STUDIO_PROJECT_FILE
+    if not project_path.exists():
+        raise FileNotFoundError(f"스튜디오 프로젝트를 찾을 수 없습니다: {slug}")
+    data = json.loads(project_path.read_text(encoding="utf-8"))
+    if premise is not None:
+        data["premise"] = premise.strip()
+    if genre is not None:
+        data["genre"] = genre.strip()
+    if language is not None:
+        data["language"] = language.strip() or "ko"
+    project_path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return data
+
+
+def update_series_meta(
+    root_dir: str | Path,
+    *,
+    slug: str,
+    premise: str | None = None,
+    genre: str | None = None,
+    language: str | None = None,
+) -> dict:
+    root = Path(root_dir)
+    series_path = _safe_book_path(root, slug) / "series.json"
+    if not series_path.exists():
+        raise FileNotFoundError(f"시리즈를 찾을 수 없습니다: {slug}")
+    data = json.loads(series_path.read_text(encoding="utf-8"))
+    if premise is not None:
+        data["premise"] = premise.strip()
+    if genre is not None:
+        data["genre"] = genre.strip()
+    if language is not None:
+        data["language"] = language.strip() or "ko"
+    series_path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return data
+
+
+def move_container_to_trash(root_dir: str | Path, *, slug: str) -> Path:
+    root = Path(root_dir)
+    container_dir = _safe_book_path(root, slug)
+    trash_root = root / ".trash"
+    trash_root.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    target = trash_root / f"{slug}-{stamp}"
+    while target.exists():
+        target = trash_root / f"{slug}-{stamp}-{uuid4().hex[:8]}"
+    shutil.move(str(container_dir), str(target))
+    return target
+
+
+def detach_series_volumes(root_dir: str | Path, *, series_slug: str) -> list[str]:
+    root = Path(root_dir)
+    detached = []
+    for book_dir in _book_dirs(root):
+        studio_path = book_dir / _STUDIO_PROJECT_FILE
+        if not studio_path.exists():
+            continue
+        try:
+            data = json.loads(studio_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if data.get("series_slug") != series_slug:
+            continue
+        data.pop("series_slug", None)
+        data.pop("volume_index", None)
+        studio_path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        detached.append(book_dir.name)
+    return detached
+
+
+def remove_chapter_files(
+    book_title: str,
+    chapter_index: int,
+    *,
+    root_dir: str | Path = "books",
+) -> list[str]:
+    chapter_dir = Path(root_dir) / _book_dir_name(book_title) / "chapter"
+    if not chapter_dir.exists():
+        return []
+    prefix = f"c-{max(int(chapter_index), 1)}-"
+    removed = []
+    for path in sorted(chapter_dir.glob(f"{prefix}*.md")):
+        path.unlink(missing_ok=True)
+        removed.append(path.name)
+    return removed
+
+
+def delete_chapter_files_by_index(
+    root_dir: str | Path,
+    *,
+    slug: str,
+    chapter_index: int,
+) -> list[str]:
+    root = Path(root_dir)
+    chapter_dir = _safe_book_path(root, slug) / "chapter"
+    prefix = f"c-{max(int(chapter_index), 1)}-"
+    removed = []
+    for path in sorted(chapter_dir.glob(f"{prefix}*.md")):
+        path.unlink(missing_ok=True)
+        removed.append(path.name)
+    if not removed:
+        raise FileNotFoundError(f"챕터를 찾을 수 없습니다: {chapter_index}장")
+    return removed
 
 
 def _series_dir_name(series_title: str) -> str:
@@ -680,6 +821,7 @@ def list_series_volumes(root_dir: str | Path, *, series_slug: str) -> list[dict]
 
 
 _BIBLE_CONVERSATION_FILE = "studio/bible-conversation.json"
+_BIBLE_FILE = "studio/bible.json"
 
 
 def read_bible_conversation(root_dir: str | Path, *, slug: str) -> list[dict]:
@@ -707,9 +849,36 @@ def save_bible_conversation(root_dir: str | Path, *, slug: str, messages: list[d
     return path
 
 
+def _read_bible_payload(container_dir: Path) -> dict[str, Any] | None:
+    path = container_dir / _BIBLE_FILE
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def read_bible(root_dir: str | Path, *, slug: str) -> dict:
     root = Path(root_dir)
     container_dir = _safe_book_path(root, slug)
+
+    payload = _read_bible_payload(container_dir)
+    if payload is not None:
+        characters = [
+            {
+                "name": str(character.get("name", "")),
+                "markdown": str(character.get("markdown", "")),
+            }
+            for character in payload.get("characters", [])
+            if isinstance(character, dict)
+        ]
+        return {
+            "setting_markdown": str(payload.get("setting_markdown", "")),
+            "characters": characters,
+        }
+
     setting_path = container_dir / "setting.md"
     setting_markdown = (
         setting_path.read_text(encoding="utf-8", errors="ignore") if setting_path.exists() else ""
@@ -736,16 +905,45 @@ def save_bible(
 ) -> None:
     root = Path(root_dir)
     container_dir = _safe_book_path(root, slug)
+
+    previous = _read_bible_payload(container_dir)
+    synced_before = {
+        name
+        for name in (previous or {}).get("synced_character_files", [])
+        if isinstance(name, str)
+    }
+
     (container_dir / "setting.md").write_text(setting_markdown, encoding="utf-8")
 
     character_dir = container_dir / "character"
     character_dir.mkdir(parents=True, exist_ok=True)
-    for old_path in character_dir.glob("*.md"):
-        old_path.unlink(missing_ok=True)
+
+    synced: dict[str, dict] = {}
     for character in characters:
         name = (character.get("name") or "").strip() or "이름없음"
         file_name = f"{_slug_part(name, 'character')}.md"
-        (character_dir / file_name).write_text(character.get("markdown", ""), encoding="utf-8")
+        synced[file_name] = {"name": name, "markdown": character.get("markdown", "")}
+
+    for file_name, character in synced.items():
+        (character_dir / file_name).write_text(character["markdown"], encoding="utf-8")
+    for stale_name in synced_before - set(synced):
+        (character_dir / stale_name).unlink(missing_ok=True)
+
+    bible_path = container_dir / _BIBLE_FILE
+    bible_path.parent.mkdir(parents=True, exist_ok=True)
+    bible_path.write_text(
+        json.dumps(
+            {
+                "setting_markdown": setting_markdown,
+                "characters": list(synced.values()),
+                "synced_character_files": list(synced),
+                "updated_at": _to_iso_utc(datetime.now(timezone.utc).timestamp()),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
 
 def clear_book_summary_outputs(book_title: str, *, root_dir: str | Path = "books") -> Path:

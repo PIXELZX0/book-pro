@@ -165,6 +165,24 @@ def _extract_content_text(content: Any) -> str:
     return ""
 
 
+def _is_tools_unsupported_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    mentions_tools = "tool" in text or "function" in text
+    mentions_rejection = any(
+        keyword in text
+        for keyword in (
+            "support",
+            "invalid",
+            "unknown",
+            "unrecognized",
+            "not allowed",
+            "does not",
+            "unexpected",
+        )
+    )
+    return mentions_tools and mentions_rejection
+
+
 def _parse_json_object(raw: str) -> dict[str, Any]:
     raw = raw.strip()
     try:
@@ -623,6 +641,68 @@ class MultiProviderBookSummarizer:
             }
 
         yield from self._stream_chat(request_kwargs)
+
+    def stream_with_tools(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        *,
+        temperature: float = 0.4,
+    ) -> Iterator[dict[str, Any]]:
+        request_kwargs: dict[str, Any] = {
+            "model": self.model,
+            "temperature": temperature,
+            "stream": True,
+            "messages": messages,
+        }
+        if tools:
+            request_kwargs["tools"] = tools
+
+        if self.provider == "openrouter":
+            request_kwargs["extra_headers"] = {
+                "HTTP-Referer": "http://localhost",
+                "X-Title": "book-pro",
+            }
+
+        try:
+            stream = self.client.chat.completions.create(**request_kwargs)
+        except Exception as exc:  # noqa: BLE001
+            if tools and _is_tools_unsupported_error(exc):
+                yield {"type": "unsupported_tools"}
+                fallback_kwargs = {
+                    key: value for key, value in request_kwargs.items() if key != "tools"
+                }
+                stream = self.client.chat.completions.create(**fallback_kwargs)
+            else:
+                raise
+
+        tool_calls_acc: dict[int, dict[str, str]] = {}
+        for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            text = _extract_content_text(getattr(delta, "content", None))
+            if text:
+                yield {"type": "text_delta", "text": text}
+            for tool_call in getattr(delta, "tool_calls", None) or []:
+                index = tool_call.index if tool_call.index is not None else 0
+                entry = tool_calls_acc.setdefault(
+                    index, {"id": "", "name": "", "arguments": ""}
+                )
+                if tool_call.id:
+                    entry["id"] = tool_call.id
+                function = getattr(tool_call, "function", None)
+                if function is not None:
+                    if function.name:
+                        entry["name"] = function.name
+                    if function.arguments:
+                        entry["arguments"] += function.arguments
+
+        if tool_calls_acc:
+            yield {
+                "type": "tool_calls",
+                "calls": [tool_calls_acc[index] for index in sorted(tool_calls_acc)],
+            }
 
     def answer_about_book(
         self,

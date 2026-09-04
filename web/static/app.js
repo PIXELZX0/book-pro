@@ -1,62 +1,10 @@
-const PROVIDERS = [
-  "open-ai",
-  "anthropic",
-  "openrouter",
-  "venice",
-  "kilo-code",
-  "opencode-go",
-  "opencode-zen",
-];
-
-const PROVIDER_LABEL = {
-  "open-ai": "OPEN-AI",
-  anthropic: "ANTHROPIC",
-  openrouter: "OpenRouter",
-  venice: "Venice",
-  "kilo-code": "Kilo Code",
-  "opencode-go": "OpenCode Go",
-  "opencode-zen": "OpenCode Zen",
-};
-
-const DEFAULT_MODEL_BY_PROVIDER = {
-  "open-ai": "gpt-4.1-mini",
-  anthropic: "claude-sonnet-4-20250514",
-  openrouter: "openai/gpt-4.1-mini",
-  venice: "venice-uncensored",
-  "kilo-code": "anthropic/claude-sonnet-4.5",
-  "opencode-go": "claude-sonnet-4-5",
-  "opencode-zen": "grok-4.6",
-};
-
-const MODEL_OPTIONS_BY_PROVIDER = {
-  "open-ai": ["gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini"],
-  anthropic: ["claude-sonnet-4-20250514", "claude-3-7-sonnet-latest", "claude-3-5-sonnet-latest"],
-  openrouter: ["openai/gpt-4.1-mini", "openai/gpt-4.1", "anthropic/claude-sonnet-4", "google/gemini-2.5-pro"],
-  venice: ["venice-uncensored", "llama-3.3-70b", "qwen2.5-72b-instruct"],
-  "kilo-code": ["anthropic/claude-sonnet-4.5", "openai/gpt-4.1-mini", "google/gemini-2.5-pro"],
-  "opencode-go": ["claude-sonnet-4-5", "gpt-5", "grok-4"],
-  "opencode-zen": [
-    "grok-4.6",
-    "grok-4.5",
-    "claude-sonnet-4-5",
-    "gpt-5.4-mini",
-    "gemini-3-flash",
-    "deepseek-v4-flash",
-    "glm-5.2",
-    "kimi-k3",
-  ],
-};
-
-const CUSTOM_MODEL_VALUE = "__custom__";
 const DEFAULT_UPLOAD_PARALLEL = 3;
 const MIN_UPLOAD_PARALLEL = 1;
 const MAX_UPLOAD_PARALLEL = 8;
 
-const STORAGE_KEY = "book-pro-panel-settings";
 const READER_PROGRESS_STORAGE_KEY = "book-pro-reader-progress";
-const UI_LANGUAGES = ["ko", "en", "ja"];
 
-const I18N_MESSAGES = {
+registerI18nMessages({
   ko: {
     brand_sub: "다권 요약 허브",
     nav_library: "라이브러리",
@@ -481,36 +429,7 @@ const I18N_MESSAGES = {
     ask_need_character: "キャラクター名を入力してください。",
     ask_loading: "回答を生成中...",
   },
-};
-
-function normalizeUiLanguage(value) {
-  return UI_LANGUAGES.includes(value) ? value : "ko";
-}
-
-function t(key, params = {}) {
-  const lang = normalizeUiLanguage(state.settings?.uiLanguage || "ko");
-  const table = I18N_MESSAGES[lang] || I18N_MESSAGES.ko;
-  const fallback = I18N_MESSAGES.ko[key] || key;
-  const template = table[key] || fallback;
-  return template.replace(/\{(\w+)\}/g, (_, name) => String(params[name] ?? ""));
-}
-
-function applyI18nToDom() {
-  const lang = normalizeUiLanguage(state.settings?.uiLanguage || "ko");
-  document.documentElement.lang = lang;
-
-  document.querySelectorAll("[data-i18n]").forEach((node) => {
-    const key = node.getAttribute("data-i18n");
-    if (!key) return;
-    node.textContent = t(key);
-  });
-
-  document.querySelectorAll("[data-i18n-placeholder]").forEach((node) => {
-    const key = node.getAttribute("data-i18n-placeholder");
-    if (!key) return;
-    node.setAttribute("placeholder", t(key));
-  });
-}
+});
 
 function clampUploadParallel(value) {
   const numeric = Number(value);
@@ -628,25 +547,6 @@ const el = {
 
   toast: document.getElementById("toast"),
 };
-
-function escapeHtml(text) {
-  return (text || "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
-function showToast(message, isError = false) {
-  el.toast.textContent = message;
-  el.toast.style.background = isError ? "#6b1010" : "#000000";
-  el.toast.classList.add("show");
-  window.clearTimeout(showToast._timer);
-  showToast._timer = window.setTimeout(() => {
-    el.toast.classList.remove("show");
-  }, 2200);
-}
 
 function formatDate(iso) {
   if (!iso) return "-";
@@ -766,7 +666,7 @@ function loadSettingsFromStorage() {
     state.settings = defaults;
   }
 
-  applyI18nToDom();
+  applyI18nToDom(state.settings?.uiLanguage);
   renderSettingsForm();
 }
 
@@ -1090,7 +990,7 @@ async function fetchProviderModels(provider, { force = false, silent = false } =
 function renderSettingsForm() {
   const provider = state.settings.selectedProvider;
 
-  applyI18nToDom();
+  applyI18nToDom(state.settings?.uiLanguage);
   if (!state.currentBook && el.insightBookTitle) {
     el.insightBookTitle.textContent = t("insight_book_select");
   }

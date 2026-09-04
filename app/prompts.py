@@ -266,3 +266,82 @@ def build_studio_bible_prompt(
 [기존 캐릭터]
 {characters_block}
 """.strip()
+
+
+def build_studio_agent_prompt(
+    *,
+    book_title: str,
+    premise: str,
+    genre: str,
+    language: str,
+    finalized_chapters: list[dict],
+    setting_markdown: str,
+    characters: list[dict],
+    sandbox_roots: list[str],
+    mode: str,
+    series_title: str | None = None,
+) -> str:
+    if finalized_chapters:
+        chapters_block = "\n".join(
+            f"{chapter['chapter_index']}장 '{chapter['chapter_title']}': {chapter['summary']}"
+            for chapter in finalized_chapters
+        )
+    else:
+        chapters_block = "아직 확정된 챕터가 없다."
+
+    if characters:
+        characters_block = "\n".join(
+            f"- {character['name']}: {character['markdown']}" for character in characters
+        )
+    else:
+        characters_block = "아직 없음"
+
+    if series_title:
+        series_block = f"소속 시리즈: {series_title}\n"
+    else:
+        series_block = ""
+
+    if mode == "approve":
+        mode_block = (
+            "쓰기/편집/삭제 도구는 즉시 적용되지 않고 사용자 승인 대기 상태가 된다. "
+            "승인 전에도 작업 내용을 명확히 설명하라."
+        )
+    else:
+        mode_block = "쓰기/편집/삭제 도구는 즉시 적용된다."
+
+    roots_block = "\n".join(f"- {root}" for root in sandbox_roots)
+
+    return f"""
+너는 사용자와 함께 새 소설을 집필하는 공동 작가이며, 파일 도구를 직접 사용할 수 있다.
+제목: {book_title}
+{series_block}장르: {genre or '미정'}
+줄거리/기획 의도: {premise or '미정'}
+모든 답변은 {language}로 작성하라.
+
+[사용 가능한 파일 도구]
+- list_files(path): 파일/디렉터리 목록 조회
+- read_file(path, offset, max_chars): 파일 읽기
+- write_file(path, content): 파일 생성/덮어쓰기
+- edit_file(path, find, replace, count): 정확한 부분 문자열 치환
+- delete_file(path): 파일 삭제 (휴지통으로 이동)
+
+[샌드박스 규칙]
+도구의 path는 항상 아래 루트 기준의 상대 경로다. 루트 밖이나 숨김 파일, studio.json/series.json은 접근할 수 없다.
+{roots_block}
+
+[작업 지침]
+- 챕터 본문은 chapter/c-<번호>-<제목>.md 파일로 저장하라. 저장 전에 기존 챕터를 읽고 흐름을 이어받아라.
+- 파일을 수정하기 전에는 반드시 read_file로 현재 내용을 확인하라.
+- 세계관/캐릭터 정보가 필요하면 setting.md와 character/ 폴더를 읽어라.
+- {mode_block}
+- studio.json, series.json은 직접 수정하지 말고 메타 수정은 사용자에게 안내하라.
+
+[이미 확정된 챕터]
+{chapters_block}
+
+[세계관 설정]
+{setting_markdown or '아직 없음'}
+
+[캐릭터]
+{characters_block}
+""".strip()

@@ -21,9 +21,9 @@ ZEN_ALIASES = ["opencode-zen", "opencode_zen", "opencode zen", "opencodezen", "z
 
 
 def _panel_providers() -> list[str]:
-    source = (WEB_DIR / "static" / "app.js").read_text(encoding="utf-8")
+    source = (WEB_DIR / "static" / "common.js").read_text(encoding="utf-8")
     match = re.search(r"const PROVIDERS = \[(.*?)\];", source, re.DOTALL)
-    assert match, "web/static/app.js에서 PROVIDERS 배열을 찾을 수 없습니다."
+    assert match, "web/static/common.js에서 PROVIDERS 배열을 찾을 수 없습니다."
     return re.findall(r'"([^"]+)"', match.group(1))
 
 
@@ -127,3 +127,22 @@ def test_panel_renders_controls_for_every_provider() -> None:
     for provider in _panel_providers():
         assert f'value="{provider}"' in html
         assert f'id="api-key-{provider}"' in html
+
+
+def test_studio_page_shares_common_settings_and_controls() -> None:
+    studio_html = (WEB_DIR / "studio.html").read_text(encoding="utf-8")
+    assert '<script src="/static/common.js"></script>' in studio_html
+    assert 'id="studio-settings-provider-select"' in studio_html
+    assert 'id="studio-settings-api-key-input"' in studio_html
+    assert 'id="studio-agent-toggle"' in studio_html
+
+    studio_js = (WEB_DIR / "static" / "studio.js").read_text(encoding="utf-8")
+    common_js = (WEB_DIR / "static" / "common.js").read_text(encoding="utf-8")
+    for provider in _panel_providers():
+        assert provider in common_js
+    assert "agent/stream" in studio_js
+    assert "registerI18nMessages" in studio_js
+
+    app_js = (WEB_DIR / "static" / "app.js").read_text(encoding="utf-8")
+    assert "registerI18nMessages" in app_js
+    assert "const PROVIDERS = [" not in app_js

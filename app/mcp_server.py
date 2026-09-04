@@ -7,6 +7,7 @@ from fastapi.concurrency import run_in_threadpool
 from app import service
 from app.config import get_settings
 from app.progress import get_upload_progress
+from app.studio_agent import run_agent as studio_agent_run
 
 try:  # pragma: no cover - fastmcp는 requirements에 포함되어 있으나 설치 전 환경 보호용
     from fastmcp import FastMCP
@@ -547,19 +548,21 @@ async def finalize_chapter(
     )
 
 
-async def get_bible(slug: str) -> dict[str, Any]:
+async def get_bible(slug: str, container_type: str = "auto") -> dict[str, Any]:
     """Read the setting bible (world setting + character sheets) of a project or series.
 
     Args:
         slug: Project slug or series slug.
+        container_type: `book` for a project, `series` for a series, `auto` to detect.
     """
-    return await _run(service.get_bible_state, slug)
+    return await _run(service.get_bible_state, slug, container_type=container_type)
 
 
 async def save_bible(
     slug: str,
     setting_markdown: str | None = None,
     characters_markdown: str | None = None,
+    container_type: str = "auto",
 ) -> dict[str, Any]:
     """Save the setting bible of a project or series.
 
@@ -567,13 +570,190 @@ async def save_bible(
         slug: Project slug or series slug.
         setting_markdown: World/setting markdown. Omit to keep the current value.
         characters_markdown: Character sheets as `## Name` blocks. Omit to keep the current value.
+        container_type: `book` for a project, `series` for a series, `auto` to detect.
     """
     return await _run(
         service.save_bible_state,
         slug,
         setting_markdown=setting_markdown,
         characters_markdown=characters_markdown,
+        container_type=container_type,
     )
+
+
+async def update_studio_project(
+    slug: str,
+    premise: str | None = None,
+    genre: str | None = None,
+    language: str | None = None,
+) -> dict[str, Any]:
+    """Update Studio project metadata (fields left out are kept as-is).
+
+    Args:
+        slug: Project slug.
+        premise: New premise/logline.
+        genre: New genre.
+        language: New writing language.
+    """
+    return await _run(
+        service.update_project,
+        slug,
+        premise=premise,
+        genre=genre,
+        language=language,
+    )
+
+
+async def delete_studio_project(
+    slug: str,
+    container_type: str = "auto",
+) -> dict[str, Any]:
+    """Move a Studio project or series to the trash directory (books/.trash/...).
+
+    Deleting a series keeps its volumes but detaches them from the series.
+    The trash directory is not exposed through the reading tools.
+
+    Args:
+        slug: Project slug or series slug.
+        container_type: `book` for a project, `series` for a series, `auto` to detect.
+    """
+    return await _run(service.delete_studio_container, slug, container_type=container_type)
+
+
+async def export_studio_book(
+    slug: str,
+    export_format: str = "markdown",
+    include_bible: bool = False,
+) -> dict[str, Any]:
+    """Export finalized chapters of a Studio project (or a whole series) to a file.
+
+    Args:
+        slug: Project slug or series slug.
+        export_format: `markdown` or `epub`.
+        include_bible: Append the setting bible (world/characters) as an appendix.
+    """
+    return await _run(
+        service.export_studio_book,
+        slug,
+        export_format=export_format,
+        include_bible=include_bible,
+    )
+
+
+async def studio_agent_chat(
+    slug: str,
+    message: str,
+    provider: str | None = None,
+    model: str | None = None,
+    api_key: str | None = None,
+    language: str | None = None,
+    mode: str = "auto",
+    max_steps: int = 12,
+) -> dict[str, Any]:
+    """Run the agentic Studio assistant: it can read, create, edit and delete project files
+    (chapters, setting bible, notes) via file tools before answering.
+
+    Args:
+        slug: Project slug (a volume slug for series volumes).
+        message: Instruction or question for the agent.
+        provider: LLM provider override.
+        model: Model override (must support OpenAI-style tool calling).
+        api_key: Provider API key override.
+        language: Writing language (defaults to the project language).
+        mode: `auto` applies file writes immediately, `approve` stores them as pending actions.
+        max_steps: Max tool-calling steps per run (1-24).
+    """
+    return await _run(
+        studio_agent_run,
+        slug,
+        message,
+        provider=provider,
+        api_key=api_key,
+        model=model,
+        language=language,
+        mode=mode,
+        max_steps=max_steps,
+    )
+
+
+async def studio_list_files(slug: str, path: str = "") -> dict[str, Any]:
+    """List files/directories of a Studio project sandbox (relative paths).
+
+    Args:
+        slug: Project slug.
+        path: Relative directory path (`""` for the project root).
+    """
+    return await _run(service.studio_list_files, slug, path)
+
+
+async def studio_read_file(
+    slug: str,
+    path: str,
+    offset: int = 0,
+    max_chars: int | None = None,
+) -> dict[str, Any]:
+    """Read a text file (.md/.json/.txt) from a Studio project sandbox.
+
+    Args:
+        slug: Project slug.
+        path: Relative file path (e.g. `chapter/c-1-제목.md`).
+        offset: Character offset to start from.
+        max_chars: Max characters to return.
+    """
+    return await _run(
+        service.studio_read_file,
+        slug,
+        path,
+        offset=offset,
+        max_chars=max_chars,
+    )
+
+
+async def studio_write_file(slug: str, path: str, content: str) -> dict[str, Any]:
+    """Create or overwrite a text file in a Studio project sandbox (snapshot is kept).
+
+    Args:
+        slug: Project slug.
+        path: Relative file path (chapters: `chapter/c-<number>-<title>.md`).
+        content: Full file content.
+    """
+    return await _run(service.studio_write_file, slug, path, content)
+
+
+async def studio_edit_file(
+    slug: str,
+    path: str,
+    find: str,
+    replace: str,
+    count: int = 1,
+) -> dict[str, Any]:
+    """Replace exact substring occurrences in a Studio project file (snapshot is kept).
+
+    Args:
+        slug: Project slug.
+        path: Relative file path.
+        find: Exact text to find.
+        replace: Replacement text.
+        count: Number of occurrences to replace.
+    """
+    return await _run(
+        service.studio_edit_file,
+        slug,
+        path,
+        find,
+        replace,
+        count=count,
+    )
+
+
+async def studio_delete_file(slug: str, path: str) -> dict[str, Any]:
+    """Delete a Studio project file (moved to books/.trash).
+
+    Args:
+        slug: Project slug.
+        path: Relative file path.
+    """
+    return await _run(service.studio_delete_file, slug, path)
 
 
 async def bible_chat(
@@ -701,6 +881,15 @@ _TOOLS: list[Any] = [
     get_studio_series,
     get_studio_project,
     studio_chat,
+    update_studio_project,
+    delete_studio_project,
+    export_studio_book,
+    studio_agent_chat,
+    studio_list_files,
+    studio_read_file,
+    studio_write_file,
+    studio_edit_file,
+    studio_delete_file,
     finalize_chapter,
     get_bible,
     save_bible,

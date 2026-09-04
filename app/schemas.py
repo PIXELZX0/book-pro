@@ -1,4 +1,4 @@
-from typing import List
+from typing import Any, List
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
@@ -298,6 +298,84 @@ class StudioSeriesResponse(BaseModel):
 class StudioVolumeCreateRequest(BaseModel):
     title: str
     volume_index: int = Field(ge=1)
+
+
+class StudioProjectUpdateRequest(BaseModel):
+    premise: str | None = None
+    genre: str | None = None
+    language: str | None = None
+
+
+class StudioChatResponse(BaseModel):
+    slug: str
+    reply: str
+    chapter_count: int
+    language: str
+
+
+class StudioChapterListResponse(BaseModel):
+    slug: str
+    chapter_count: int
+    chapters: List[BookChapterFile] = Field(default_factory=list)
+
+
+class StudioChapterDeleteResponse(BaseModel):
+    slug: str
+    chapter_index: int
+    deleted_file_names: List[str] = Field(default_factory=list)
+    chapter_count: int
+
+
+class StudioDeleteResponse(BaseModel):
+    slug: str
+    container_type: str
+    trash_path: str
+    detached_volume_slugs: List[str] = Field(default_factory=list)
+
+
+class StudioAgentRequest(BaseModel):
+    message: str
+    provider: str | None = None
+    api_key: str | None = None
+    model: str | None = None
+    language: str = "ko"
+    mode: str = Field(default="auto", description="auto 또는 approve")
+    max_steps: int = Field(default=12, ge=1, le=24)
+
+
+class StudioPendingAction(BaseModel):
+    id: str
+    tool: str
+    path: str = ""
+    preview: str = ""
+    created_at: str = ""
+
+
+class StudioActionResponse(BaseModel):
+    slug: str
+    action_id: str
+    status: str
+    result: dict[str, Any] = Field(default_factory=dict)
+
+
+class StudioHistoryItem(BaseModel):
+    id: str
+    tool: str = ""
+    root: str = ""
+    path: str = ""
+    backup_path: str = ""
+    created_at: str = ""
+
+
+class StudioHistoryRestoreRequest(BaseModel):
+    entry_id: str
+
+
+class StudioHistoryRestoreResponse(BaseModel):
+    slug: str
+    entry_id: str
+    path: str = ""
+    restored: bool = True
 
 
 class AudioScriptLine(BaseModel):
