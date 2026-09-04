@@ -16,7 +16,6 @@ from fastapi.concurrency import run_in_threadpool
 from app.config import Settings, get_settings
 from app.epub_parser import parse_epub
 from app.progress import (
-    append_upload_event,
     complete_upload_progress,
     fail_upload_progress,
     init_upload_progress,
@@ -1136,19 +1135,6 @@ def summarize_from_temp_path(
             chapter_summary.chapter_index,
             chapter_path,
         )
-        if upload_id:
-            append_upload_event(
-                upload_id,
-                "chapter",
-                {
-                    "chapter_index": chapter_summary.chapter_index,
-                    "chapter_title": chapter_summary.chapter_title,
-                    "summary": chapter_summary.summary,
-                    "key_events": chapter_summary.key_events,
-                    "chapter_total": len(book.chapters),
-                    "file_name": chapter_path.name,
-                },
-            )
 
     summary = summarizer.summarize_incremental(
         book,

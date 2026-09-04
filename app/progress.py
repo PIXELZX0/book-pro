@@ -3,8 +3,6 @@ from threading import Lock
 from typing import Any
 
 _ALLOWED_STATUS = {"queued", "processing", "completed", "failed"}
-MAX_EVENTS_PER_UPLOAD = 500
-TERMINAL_EVENTS = {"done", "failed"}
 
 
 def _to_iso_utc(ts: float) -> str:
@@ -15,12 +13,10 @@ class UploadProgressStore:
     def __init__(self) -> None:
         self._lock = Lock()
         self._items: dict[str, dict[str, Any]] = {}
-        self._events: dict[str, list[dict[str, Any]]] = {}
 
     def init(self, upload_id: str, *, file_name: str) -> None:
         now = datetime.now(tz=timezone.utc).timestamp()
         with self._lock:
-            self._events.pop(upload_id, None)
             self._items[upload_id] = {
                 "upload_id": upload_id,
                 "file_name": file_name,
@@ -38,9 +34,6 @@ class UploadProgressStore:
                 "error": "",
                 "updated_at": _to_iso_utc(now),
             }
-            self._append_event_locked(
-                upload_id, "progress", dict(self._items[upload_id]), now=now
-            )
 
     def get(self, upload_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -90,49 +83,10 @@ class UploadProgressStore:
                     item[key] = fields[key]
 
             item["updated_at"] = _to_iso_utc(now)
-            self._append_event_locked(upload_id, "progress", dict(item), now=now)
             return dict(item)
 
-    def append_event(
-        self, upload_id: str, event: str, data: dict[str, Any] | None = None
-    ) -> dict[str, Any] | None:
-        with self._lock:
-            return self._append_event_locked(upload_id, event, data or {})
-
-    def _append_event_locked(
-        self,
-        upload_id: str,
-        event: str,
-        data: dict[str, Any],
-        *,
-        now: float | None = None,
-    ) -> dict[str, Any] | None:
-        if upload_id not in self._items:
-            return None
-
-        timestamp = now if now is not None else datetime.now(tz=timezone.utc).timestamp()
-        events = self._events.setdefault(upload_id, [])
-        record = {
-            "seq": (events[-1]["seq"] + 1) if events else 1,
-            "event": event,
-            "data": data,
-            "at": _to_iso_utc(timestamp),
-        }
-        events.append(record)
-        if len(events) > MAX_EVENTS_PER_UPLOAD:
-            del events[: len(events) - MAX_EVENTS_PER_UPLOAD]
-        return dict(record)
-
-    def list_events(self, upload_id: str, *, after_seq: int = 0) -> list[dict[str, Any]]:
-        with self._lock:
-            return [dict(event) for event in self._events.get(upload_id, []) if event["seq"] > after_seq]
-
-    def has_events(self, upload_id: str) -> bool:
-        with self._lock:
-            return bool(self._events.get(upload_id))
-
     def complete(self, upload_id: str, *, message: str = "요약 완료") -> dict[str, Any] | None:
-        item = self.update(
+        return self.update(
             upload_id,
             status="completed",
             progress=100,
@@ -140,11 +94,9 @@ class UploadProgressStore:
             message=message,
             error="",
         )
-        self.append_event(upload_id, "done", item or {})
-        return item
 
     def fail(self, upload_id: str, *, error: str) -> dict[str, Any] | None:
-        item = self.update(
+        return self.update(
             upload_id,
             status="failed",
             progress=100,
@@ -152,8 +104,6 @@ class UploadProgressStore:
             message="요약 실패",
             error=error,
         )
-        self.append_event(upload_id, "failed", item or {})
-        return item
 
 
 _store = UploadProgressStore()
@@ -183,17 +133,3 @@ def list_upload_progress(*, active_only: bool = False) -> list[dict[str, Any]]:
     if active_only:
         return _store.list(statuses={"queued", "processing"})
     return _store.list()
-
-
-def append_upload_event(
-    upload_id: str, event: str, data: dict[str, Any] | None = None
-) -> dict[str, Any] | None:
-    return _store.append_event(upload_id, event, data)
-
-
-def list_upload_events(upload_id: str, *, after_seq: int = 0) -> list[dict[str, Any]]:
-    return _store.list_events(upload_id, after_seq=after_seq)
-
-
-def has_upload_events(upload_id: str) -> bool:
-    return _store.has_events(upload_id)
