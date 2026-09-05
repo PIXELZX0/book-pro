@@ -132,8 +132,9 @@ def test_panel_renders_controls_for_every_provider() -> None:
 def test_studio_page_shares_common_settings_and_controls() -> None:
     studio_html = (WEB_DIR / "studio.html").read_text(encoding="utf-8")
     assert 'src="/static/common.js?v=' in studio_html
-    assert 'id="studio-settings-provider-select"' in studio_html
-    assert 'id="studio-settings-api-key-input"' in studio_html
+    assert 'id="studio-settings-provider-select"' not in studio_html
+    assert 'id="studio-open-settings-btn"' not in studio_html
+    assert 'href="/panel?view=settings"' in studio_html
     assert 'id="studio-agent-toggle"' in studio_html
     assert 'id="studio-new-project-btn"' in studio_html
     assert 'id="studio-new-project-modal"' in studio_html

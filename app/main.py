@@ -109,7 +109,14 @@ app = FastAPI(
 )
 
 if (WEB_DIR / "static").exists():
-    app.mount("/static", StaticFiles(directory=str(WEB_DIR / "static")), name="static")
+
+    class NoCacheStaticFiles(StaticFiles):
+        def file_response(self, *args: Any, **kwargs: Any) -> Any:
+            response = super().file_response(*args, **kwargs)
+            response.headers["Cache-Control"] = "no-cache"
+            return response
+
+    app.mount("/static", NoCacheStaticFiles(directory=str(WEB_DIR / "static")), name="static")
 
 if _mcp_app is not None:
     app.add_middleware(MountPathRewriteMiddleware, path=mcp_mount_path())
@@ -126,7 +133,7 @@ def panel() -> FileResponse:
     panel_path = WEB_DIR / "index.html"
     if not panel_path.exists():
         raise HTTPException(status_code=404, detail="웹 패널 파일이 없습니다.")
-    return FileResponse(str(panel_path))
+    return FileResponse(str(panel_path), headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/studio")
@@ -134,7 +141,7 @@ def studio_page() -> FileResponse:
     studio_path = WEB_DIR / "studio.html"
     if not studio_path.exists():
         raise HTTPException(status_code=404, detail="스튜디오 페이지 파일이 없습니다.")
-    return FileResponse(str(studio_path))
+    return FileResponse(str(studio_path), headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/skill.md")

@@ -10,19 +10,20 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Playfair+Display:ital,wght@0,600;1,600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/static/style.css?v=20260904a" />
+    <link rel="stylesheet" href="/static/style.css?v=20260904c" />
   </head>
   <body>
     <div class="app-shell">
       <aside class="sidebar">
         <div class="brand-wrap">
           <div class="brand">book-pro</div>
-          <div class="brand-sub">AI Writing Studio</div>
+          <div class="brand-sub" data-i18n="brand_sub">Multi-book Summary Hub</div>
         </div>
 
         <nav class="nav">
-          <a class="nav-item" id="nav-panel" href="/panel" data-i18n="nav_panel">Panel</a>
+          <a class="nav-item" id="nav-panel" href="/panel" data-i18n="nav_library">Library</a>
           <span class="nav-item active">Studio</span>
+          <a class="nav-item" id="nav-settings" href="/panel?view=settings" data-i18n="nav_settings">Settings</a>
         </nav>
       </aside>
 
@@ -38,6 +39,7 @@
           <section class="detail-layout">
             <aside class="panel detail-side">
               <div class="studio-projects-head">
+                <h2 class="panel-title" data-i18n="studio_projects_title">Projects</h2>
                 <button
                   id="studio-new-project-btn"
                   class="btn studio-add-btn"
@@ -45,47 +47,8 @@
                   title="새 프로젝트 만들기"
                   data-i18n-title="studio_new_modal_title"
                 >+</button>
-                <h2 class="panel-title" data-i18n="studio_projects_title">Projects</h2>
               </div>
               <div id="studio-project-list"></div>
-
-              <details class="studio-settings" id="studio-settings-panel">
-                <summary data-i18n="studio_settings_title">실행 설정 (Provider/Model/Key)</summary>
-                <label class="field">
-                  <span data-i18n="studio_settings_provider">Provider</span>
-                  <select id="studio-settings-provider-select"></select>
-                </label>
-                <label class="field">
-                  <span data-i18n="studio_settings_model">Model</span>
-                  <select id="studio-settings-model-select"></select>
-                </label>
-                <label class="field hidden" id="studio-settings-custom-model-field">
-                  <span data-i18n="studio_settings_custom_model">직접 입력 Model</span>
-                  <input
-                    id="studio-settings-custom-model-input"
-                    type="text"
-                    placeholder="예: gpt-4.1-mini"
-                    data-i18n-placeholder="studio_settings_custom_model_placeholder"
-                  />
-                </label>
-                <label class="field">
-                  <span data-i18n="studio_settings_api_key">API Key</span>
-                  <input id="studio-settings-api-key-input" type="password" placeholder="sk-..." />
-                </label>
-                <label class="field">
-                  <span data-i18n="studio_settings_ui_language">UI 언어</span>
-                  <select id="studio-settings-ui-language-input">
-                    <option value="ko">Korean</option>
-                    <option value="en">English</option>
-                    <option value="ja">Japanese</option>
-                  </select>
-                </label>
-                <label class="field">
-                  <span data-i18n="studio_settings_language">집필 언어</span>
-                  <input id="studio-settings-language-input" type="text" value="ko" />
-                </label>
-                <button id="studio-settings-save-btn" class="btn btn-primary full" type="button" data-i18n="studio_settings_save_btn">설정 저장</button>
-              </details>
             </aside>
 
             <section class="panel detail-main">
@@ -270,7 +233,7 @@
       <div class="studio-modal">
         <div class="studio-modal-head">
           <h3 data-i18n="studio_new_modal_title">새 프로젝트 만들기</h3>
-          <button id="studio-modal-close-btn" class="btn btn-ghost studio-add-btn" type="button" data-i18n="studio_close_btn">✕</button>
+          <button id="studio-modal-close-btn" class="btn btn-ghost studio-add-btn" type="button" title="닫기" aria-label="닫기">✕</button>
         </div>
         <label class="field">
           <span data-i18n="studio_format">Format</span>
@@ -315,7 +278,7 @@
 
     <div id="toast" class="toast"></div>
 
-    <script src="/static/common.js?v=20260904a"></script>
-    <script src="/static/studio.js?v=20260904a"></script>
+    <script src="/static/common.js?v=20260904c"></script>
+    <script src="/static/studio.js?v=20260904c"></script>
   </body>
 </html>

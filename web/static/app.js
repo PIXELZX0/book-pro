@@ -2547,6 +2547,12 @@ async function init() {
   loadSettingsFromStorage();
   loadReaderProgressFromStorage();
   bindEvents();
+
+  const initialView = new URLSearchParams(window.location.search).get("view");
+  if (initialView === "settings" || initialView === "library") {
+    switchView(initialView);
+  }
+
   setTab("chapter");
   await fetchProviderModels(state.settings.selectedProvider, { force: true, silent: true });
   await restoreActiveUploads();

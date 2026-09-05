@@ -1,5 +1,8 @@
 const STUDIO_I18N = {
   ko: {
+    brand_sub: "다권 요약 허브",
+    nav_library: "라이브러리",
+    nav_settings: "설정",
     nav_panel: "Panel",
     studio_subtitle: "AI와 함께 챕터 단위로 책을 집필하는 전용 페이지입니다.",
     studio_projects_title: "Projects",
@@ -14,6 +17,7 @@ const STUDIO_I18N = {
     studio_premise_placeholder: "줄거리/기획 의도를 입력하세요",
     studio_new_project_btn: "New Project",
     studio_settings_title: "실행 설정 (Provider/Model/Key)",
+    studio_settings_label: "⚙ 설정",
     studio_settings_provider: "Provider",
     studio_settings_model: "Model",
     studio_settings_custom_model: "직접 입력 Model",
@@ -88,6 +92,9 @@ const STUDIO_I18N = {
     studio_error: "오류",
   },
   en: {
+    brand_sub: "Multi-book Summary Hub",
+    nav_library: "Library",
+    nav_settings: "Settings",
     nav_panel: "Panel",
     studio_subtitle: "Write a book chapter by chapter with the AI co-writer.",
     studio_projects_title: "Projects",
@@ -102,6 +109,7 @@ const STUDIO_I18N = {
     studio_premise_placeholder: "Describe the premise",
     studio_new_project_btn: "New Project",
     studio_settings_title: "Run settings (Provider/Model/Key)",
+    studio_settings_label: "⚙ Settings",
     studio_settings_provider: "Provider",
     studio_settings_model: "Model",
     studio_settings_custom_model: "Custom model",
@@ -176,6 +184,9 @@ const STUDIO_I18N = {
     studio_error: "Error",
   },
   ja: {
+    brand_sub: "マルチブック要約ハブ",
+    nav_library: "ライブラリ",
+    nav_settings: "設定",
     nav_panel: "Panel",
     studio_subtitle: "AIと一緒に章単位で本を執筆するページです。",
     studio_projects_title: "Projects",
@@ -190,6 +201,7 @@ const STUDIO_I18N = {
     studio_premise_placeholder: "あらすじ/企画意図を入力",
     studio_new_project_btn: "新規プロジェクト",
     studio_settings_title: "実行設定 (Provider/Model/Key)",
+    studio_settings_label: "⚙ 設定",
     studio_settings_provider: "Provider",
     studio_settings_model: "モデル",
     studio_settings_custom_model: "直接入力モデル",
@@ -321,15 +333,6 @@ const el = {
   studioBibleCharactersInput: document.getElementById("studio-bible-characters-input"),
   studioBibleSaveBtn: document.getElementById("studio-bible-save-btn"),
 
-  settingsProviderSelect: document.getElementById("studio-settings-provider-select"),
-  settingsModelSelect: document.getElementById("studio-settings-model-select"),
-  settingsCustomModelField: document.getElementById("studio-settings-custom-model-field"),
-  settingsCustomModelInput: document.getElementById("studio-settings-custom-model-input"),
-  settingsApiKeyInput: document.getElementById("studio-settings-api-key-input"),
-  settingsUiLanguageInput: document.getElementById("studio-settings-ui-language-input"),
-  settingsLanguageInput: document.getElementById("studio-settings-language-input"),
-  settingsSaveBtn: document.getElementById("studio-settings-save-btn"),
-
   agentToggle: document.getElementById("studio-agent-toggle"),
   agentModeSelect: document.getElementById("studio-agent-mode-select"),
   exportBibleToggle: document.getElementById("studio-export-bible-toggle"),
@@ -357,81 +360,6 @@ const el = {
   modalCloseBtn: document.getElementById("studio-modal-close-btn"),
   modalCancelBtn: document.getElementById("studio-modal-cancel-btn"),
 };
-
-function renderProviderOptions() {
-  if (!el.settingsProviderSelect) return;
-  el.settingsProviderSelect.innerHTML = PROVIDERS.map(
-    (provider) => `<option value="${provider}">${escapeHtml(PROVIDER_LABEL[provider] || provider)}</option>`,
-  ).join("");
-}
-
-function isCustomModel(provider, model) {
-  const options = MODEL_OPTIONS_BY_PROVIDER[provider] || [];
-  return Boolean(model) && !options.includes(model);
-}
-
-function renderModelSelect() {
-  if (!el.settingsModelSelect) return;
-  const provider = state.settings.selectedProvider;
-  const options = MODEL_OPTIONS_BY_PROVIDER[provider] || [];
-  const current = state.settings.models[provider] || DEFAULT_MODEL_BY_PROVIDER[provider] || "";
-  const normalizedCurrent = isCustomModel(provider, current) ? CUSTOM_MODEL_VALUE : current;
-
-  el.settingsModelSelect.innerHTML = options
-    .map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`)
-    .join("");
-  if (options.length) {
-    const customOption = `<option value="${CUSTOM_MODEL_VALUE}">${escapeHtml(t("studio_settings_custom_model"))}</option>`;
-    el.settingsModelSelect.insertAdjacentHTML("beforeend", customOption);
-  }
-  el.settingsModelSelect.value = options.includes(normalizedCurrent) ? normalizedCurrent : CUSTOM_MODEL_VALUE;
-  renderCustomModelField();
-}
-
-function renderCustomModelField() {
-  if (!el.settingsModelSelect) return;
-  const isCustom = el.settingsModelSelect.value === CUSTOM_MODEL_VALUE;
-  el.settingsCustomModelField?.classList.toggle("hidden", !isCustom);
-  if (isCustom && el.settingsCustomModelInput) {
-    const provider = state.settings.selectedProvider;
-    const current = state.settings.models[provider] || "";
-    el.settingsCustomModelInput.value = isCustomModel(provider, current) ? current : "";
-  }
-}
-
-function renderSettingsForm() {
-  if (!el.settingsProviderSelect) return;
-  renderProviderOptions();
-  el.settingsProviderSelect.value = state.settings.selectedProvider;
-  renderModelSelect();
-  if (el.settingsApiKeyInput) el.settingsApiKeyInput.value = state.settings.apiKeys[state.settings.selectedProvider] || "";
-  if (el.settingsUiLanguageInput) el.settingsUiLanguageInput.value = state.settings.uiLanguage || "ko";
-  if (el.settingsLanguageInput) el.settingsLanguageInput.value = state.settings.language || "ko";
-}
-
-function saveSettings() {
-  const provider = el.settingsProviderSelect?.value || state.settings.selectedProvider;
-  const model =
-    el.settingsModelSelect?.value === CUSTOM_MODEL_VALUE
-      ? (el.settingsCustomModelInput?.value || "").trim()
-      : el.settingsModelSelect?.value || "";
-  const apiKey = el.settingsApiKeyInput?.value || "";
-  const uiLanguage = el.settingsUiLanguageInput?.value || "ko";
-  const language = (el.settingsLanguageInput?.value || "ko").trim() || "ko";
-
-  state.settings = writeSharedSettings({
-    selectedProvider: provider,
-    models: { ...state.settings.models, [provider]: model },
-    apiKeys: { ...state.settings.apiKeys, [provider]: apiKey },
-    uiLanguage,
-    language,
-  });
-  setUiLanguage(state.settings.uiLanguage);
-  applyI18nToDom();
-  renderSettingsForm();
-  showToast(t("studio_settings_saved"));
-}
-
 function getRunConfig() {
   return getRunConfigFrom(state.settings);
 }
@@ -476,7 +404,7 @@ function renderStudioProjectList() {
   const seriesButtons = state.studioSeriesList.map(
     (item) => `
       <button type="button" class="btn btn-ghost full studio-series-item" data-slug="${escapeHtml(item.slug)}">
-        📚 ${escapeHtml(item.series_title)} (${item.volumes.length})
+        📚 ${escapeHtml(item.series_title)} (${item.volumes.length}권)
       </button>
     `,
   );
@@ -1307,9 +1235,8 @@ function bindEvents() {
     if (event.target === el.newProjectModal) closeNewProjectModal();
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !el.newProjectModal?.classList.contains("hidden")) {
-      closeNewProjectModal();
-    }
+    if (event.key !== "Escape") return;
+    if (!el.newProjectModal?.classList.contains("hidden")) closeNewProjectModal();
   });
 
   el.studioCreateBtn?.addEventListener("click", () => void createStudioProjectOrSeries());
@@ -1331,16 +1258,6 @@ function bindEvents() {
   el.studioBibleSendBtn?.addEventListener("click", () => void submitStudioBibleMessage());
   el.studioBibleSaveBtn?.addEventListener("click", () => void saveStudioBible());
   el.studioAddVolumeBtn?.addEventListener("click", () => void addStudioVolume());
-
-  el.settingsProviderSelect?.addEventListener("change", () => {
-    state.settings.selectedProvider = el.settingsProviderSelect.value;
-    renderModelSelect();
-    if (el.settingsApiKeyInput) {
-      el.settingsApiKeyInput.value = state.settings.apiKeys[state.settings.selectedProvider] || "";
-    }
-  });
-  el.settingsModelSelect?.addEventListener("change", () => renderCustomModelField());
-  el.settingsSaveBtn?.addEventListener("click", () => saveSettings());
 
   el.agentToggle?.addEventListener("change", () => {
     state.agentEnabled = Boolean(el.agentToggle?.checked);
@@ -1379,11 +1296,6 @@ async function init() {
   setUiLanguage(state.settings.uiLanguage || "ko");
   applyI18nToDom();
   bindEvents();
-  try {
-    renderSettingsForm();
-  } catch (error) {
-    showToast(error.message || "Settings render failed", true);
-  }
   await loadStudioProjects();
 }
 
