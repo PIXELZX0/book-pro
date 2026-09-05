@@ -10,7 +10,7 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Playfair+Display:ital,wght@0,600;1,600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/static/style.css" />
+    <link rel="stylesheet" href="/static/style.css?v=20260904a" />
   </head>
   <body>
     <div class="app-shell">
@@ -37,43 +37,17 @@
 
           <section class="detail-layout">
             <aside class="panel detail-side">
-              <h2 class="panel-title" data-i18n="studio_projects_title">Projects</h2>
+              <div class="studio-projects-head">
+                <button
+                  id="studio-new-project-btn"
+                  class="btn studio-add-btn"
+                  type="button"
+                  title="새 프로젝트 만들기"
+                  data-i18n-title="studio_new_modal_title"
+                >+</button>
+                <h2 class="panel-title" data-i18n="studio_projects_title">Projects</h2>
+              </div>
               <div id="studio-project-list"></div>
-              <label class="field">
-                <span data-i18n="studio_format">Format</span>
-                <select id="studio-new-format-select">
-                  <option value="short" data-i18n="studio_format_short">단편 (한 권)</option>
-                  <option value="long" data-i18n="studio_format_long">장편 (시리즈, 여러 권)</option>
-                </select>
-              </label>
-              <label class="field">
-                <span data-i18n="studio_title">Title</span>
-                <input
-                  id="studio-new-title-input"
-                  type="text"
-                  placeholder="새 책/시리즈 제목"
-                  data-i18n-placeholder="studio_title_placeholder"
-                />
-              </label>
-              <label class="field">
-                <span data-i18n="studio_genre">Genre</span>
-                <input
-                  id="studio-new-genre-input"
-                  type="text"
-                  placeholder="예: 판타지"
-                  data-i18n-placeholder="studio_genre_placeholder"
-                />
-              </label>
-              <label class="field">
-                <span data-i18n="studio_premise">Premise</span>
-                <textarea
-                  id="studio-new-premise-input"
-                  rows="3"
-                  placeholder="줄거리/기획 의도를 입력하세요"
-                  data-i18n-placeholder="studio_premise_placeholder"
-                ></textarea>
-              </label>
-              <button id="studio-create-btn" class="btn btn-primary full" type="button" data-i18n="studio_new_project_btn">New Project</button>
 
               <details class="studio-settings" id="studio-settings-panel">
                 <summary data-i18n="studio_settings_title">실행 설정 (Provider/Model/Key)</summary>
@@ -292,9 +266,56 @@
       </main>
     </div>
 
+    <div id="studio-new-project-modal" class="studio-modal-overlay hidden" role="dialog" aria-modal="true">
+      <div class="studio-modal">
+        <div class="studio-modal-head">
+          <h3 data-i18n="studio_new_modal_title">새 프로젝트 만들기</h3>
+          <button id="studio-modal-close-btn" class="btn btn-ghost studio-add-btn" type="button" data-i18n="studio_close_btn">✕</button>
+        </div>
+        <label class="field">
+          <span data-i18n="studio_format">Format</span>
+          <select id="studio-new-format-select">
+            <option value="short" data-i18n="studio_format_short">단편 (한 권)</option>
+            <option value="long" data-i18n="studio_format_long">장편 (시리즈, 여러 권)</option>
+          </select>
+        </label>
+        <label class="field">
+          <span data-i18n="studio_title">Title</span>
+          <input
+            id="studio-new-title-input"
+            type="text"
+            placeholder="새 책/시리즈 제목"
+            data-i18n-placeholder="studio_title_placeholder"
+          />
+        </label>
+        <label class="field">
+          <span data-i18n="studio_genre">Genre</span>
+          <input
+            id="studio-new-genre-input"
+            type="text"
+            placeholder="예: 판타지"
+            data-i18n-placeholder="studio_genre_placeholder"
+          />
+        </label>
+        <label class="field">
+          <span data-i18n="studio_premise">Premise</span>
+          <textarea
+            id="studio-new-premise-input"
+            rows="3"
+            placeholder="줄거리/기획 의도를 입력하세요"
+            data-i18n-placeholder="studio_premise_placeholder"
+          ></textarea>
+        </label>
+        <div class="studio-modal-actions">
+          <button id="studio-create-btn" class="btn btn-primary" type="button" data-i18n="studio_new_project_btn">New Project</button>
+          <button id="studio-modal-cancel-btn" class="btn btn-ghost" type="button" data-i18n="studio_cancel_btn">Cancel</button>
+        </div>
+      </div>
+    </div>
+
     <div id="toast" class="toast"></div>
 
-    <script src="/static/common.js"></script>
-    <script src="/static/studio.js"></script>
+    <script src="/static/common.js?v=20260904a"></script>
+    <script src="/static/studio.js?v=20260904a"></script>
   </body>
 </html>

@@ -56,6 +56,7 @@ const STUDIO_I18N = {
     studio_characters_hint: 'Characters (각 캐릭터는 "## 이름"으로 구분)',
     studio_characters_placeholder: "## 캐릭터이름\n설명...",
     studio_save_bible_btn: "Save setting bible",
+    studio_new_modal_title: "새 프로젝트 만들기",
     studio_no_projects: "아직 스튜디오 프로젝트가 없습니다.",
     studio_no_volumes: "아직 권이 없습니다. 아래에서 첫 권을 추가하세요.",
     studio_no_pending: "승인 대기 작업이 없습니다.",
@@ -143,6 +144,7 @@ const STUDIO_I18N = {
     studio_characters_hint: 'Characters (separate each with "## Name")',
     studio_characters_placeholder: "## Character name\nDescription...",
     studio_save_bible_btn: "Save setting bible",
+    studio_new_modal_title: "Create New Project",
     studio_no_projects: "No studio projects yet.",
     studio_no_volumes: "No volumes yet. Add the first one below.",
     studio_no_pending: "No pending actions.",
@@ -230,6 +232,7 @@ const STUDIO_I18N = {
     studio_characters_hint: "キャラクター（「## 名前」で区切る）",
     studio_characters_placeholder: "## キャラクター名\n説明...",
     studio_save_bible_btn: "設定資料を保存",
+    studio_new_modal_title: "新規プロジェクト作成",
     studio_no_projects: "まだスタジオプロジェクトがありません。",
     studio_no_volumes: "まだ巻がありません。下から追加してください。",
     studio_no_pending: "承認待ちの操作はありません。",
@@ -348,6 +351,11 @@ const el = {
   editLanguageInput: document.getElementById("studio-edit-language-input"),
   editSaveBtn: document.getElementById("studio-edit-save-btn"),
   editCancelBtn: document.getElementById("studio-edit-cancel-btn"),
+
+  newProjectBtn: document.getElementById("studio-new-project-btn"),
+  newProjectModal: document.getElementById("studio-new-project-modal"),
+  modalCloseBtn: document.getElementById("studio-modal-close-btn"),
+  modalCancelBtn: document.getElementById("studio-modal-cancel-btn"),
 };
 
 function renderProviderOptions() {
@@ -426,6 +434,15 @@ function saveSettings() {
 
 function getRunConfig() {
   return getRunConfigFrom(state.settings);
+}
+
+function openNewProjectModal() {
+  el.newProjectModal?.classList.remove("hidden");
+  el.studioNewTitleInput?.focus();
+}
+
+function closeNewProjectModal() {
+  el.newProjectModal?.classList.add("hidden");
 }
 
 function showStudioPanel(panel) {
@@ -511,6 +528,7 @@ async function createStudioProjectOrSeries() {
     if (el.studioNewTitleInput) el.studioNewTitleInput.value = "";
     if (el.studioNewGenreInput) el.studioNewGenreInput.value = "";
     if (el.studioNewPremiseInput) el.studioNewPremiseInput.value = "";
+    closeNewProjectModal();
     await loadStudioProjects();
     if (format === "long") {
       await openStudioSeries(created.slug);
@@ -1282,6 +1300,18 @@ async function saveStudioBible() {
 }
 
 function bindEvents() {
+  el.newProjectBtn?.addEventListener("click", () => openNewProjectModal());
+  el.modalCloseBtn?.addEventListener("click", () => closeNewProjectModal());
+  el.modalCancelBtn?.addEventListener("click", () => closeNewProjectModal());
+  el.newProjectModal?.addEventListener("click", (event) => {
+    if (event.target === el.newProjectModal) closeNewProjectModal();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !el.newProjectModal?.classList.contains("hidden")) {
+      closeNewProjectModal();
+    }
+  });
+
   el.studioCreateBtn?.addEventListener("click", () => void createStudioProjectOrSeries());
   el.studioSendBtn?.addEventListener("click", () => void submitStudioMessage());
   el.studioFinalizeBtn?.addEventListener("click", () => openStudioFinalizeForm());
@@ -1348,8 +1378,12 @@ function bindEvents() {
 async function init() {
   setUiLanguage(state.settings.uiLanguage || "ko");
   applyI18nToDom();
-  renderSettingsForm();
   bindEvents();
+  try {
+    renderSettingsForm();
+  } catch (error) {
+    showToast(error.message || "Settings render failed", true);
+  }
   await loadStudioProjects();
 }
 
